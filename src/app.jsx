@@ -3,7 +3,8 @@ import { Box, Text, useApp, useInput } from 'ink';
 import {
   loadTasks, saveTasks, loadArchive, saveArchive, archiveTask, parseInput, formatTask,
   getTags, today, dateSuggestions, tagSuggestions, autoFormatDates, DATE_CTX,
-  loadAllTasks, listProjects, projectSuggestions, projectExists, slugifyProject,
+  loadAllTasks, listProjects, projectSuggestions, projectExists, slugifyProject, archiveSections, compareTasks,
+  taskBlocks, sortTasks,
   prioritySuggestions, priorityEmoji, PRIO_CTX,
 } from './store.js';
 import { Calendar } from './calendar.jsx';
@@ -18,6 +19,7 @@ const COMMANDS = [
   { name: 'project', desc: 'open or create a project — /project name' },
   { name: 'inbox', desc: 'back to the inbox task list' },
   { name: 'move', desc: 'move selected task to a project — /move name' },
+  { name: 'file', desc: 'file tasks into projects matching their #tags' },
   { name: 'tag', desc: 'filter by #tag — /tag name, /tag to list' },
   { name: 'all', desc: 'clear the tag filter' },
   { name: 'sort', desc: 'sort tasks by due date' },
@@ -31,6 +33,7 @@ const COMMANDS = [
 const ALIASES = {
   quit: 'exit', q: 'exit', calendar: 'cal', sortby: 'sort', tags: 'tag', reload: 'refresh',
   cmds: 'commands', clear: 'archive', projects: 'project', proj: 'project', mv: 'move', home: 'inbox',
+  sweep: 'file',
 };
 
 // reverse map: command name → its aliases, for the /commands panel
@@ -99,6 +102,19 @@ function Title({ title, selected, done }) {
   );
 }
 
+// Toggl entry description: just the task text — no #tags, no 📅/✅ dates,
+// no priority or other emojis
+function togglDescription(title) {
+  return (
+    title
+      .replace(/(?:📅|✅)\s*\d{4}-\d{2}-\d{2}/gu, '')
+      .replace(/#[\w][\w/-]*/g, '')
+      .replace(/[\u{1F000}-\u{1FAFF}\u{2190}-\u{2BFF}\u{2000}-\u{206F}\u{FE0F}\u{200D}]/gu, '')
+      .replace(/\s{2,}/g, ' ')
+      .trim() || 'untitled'
+  );
+}
+
 function fmtElapsed(ms) {
   const s = Math.floor(ms / 1000);
   const h = Math.floor(s / 3600);
@@ -111,6 +127,7 @@ function TaskLine({ task, selected, tracked, elapsed, toggl }) {
   return (
     <Text>
       <Text color={selected ? ACCENT : undefined}>{selected ? '❯ ' : '  '}</Text>
+      {(task.indent || 0) > 0 && <Text dimColor>{'  '.repeat(task.indent)}↳ </Text>}
       <Text color={task.done ? 'green' : 'white'}>{task.done ? '[x]' : '[ ]'}</Text>
       <Text> </Text>
       <Title title={task.title} selected={selected} done={task.done} />
@@ -129,9 +146,9 @@ function HelpBar({ view, toggl }) {
   if (view === 'home')
     return (
       <Text dimColor>
-        enter add task ("buy milk #home due friday") · ↑/↓ select · shift+↑/↓ reorder · enter
-        (empty) toggle done · {toggl ? 'ctrl+t toggl ▶/⏹ · ' : ''}ctrl+space archive · ctrl+d delete
-        · / commands
+        enter add task ("buy milk #home due friday") · ↑/↓ select · shift+↑/↓ reorder ·
+        tab/shift+tab nest sub-task · enter (empty) toggle done ·{' '}
+        {toggl ? 'ctrl+t toggl ▶/⏹ · ' : ''}ctrl+space archive · ctrl+d delete · / commands
       </Text>
     );
   if (view === 'archive') return <Text dimColor>ctrl+u unarchive · ↑/↓ select · esc home</Text>;
@@ -229,6 +246,15 @@ export function App({ initialView = 'home' }) {
     editInput((v) => `${v.slice(0, prioCtx.index)}📅 ${prioCtx[1]} ${s.emoji ? `${s.emoji} ` : ''}`);
   };
 
+  // a task plus its sub-tasks (the lines below it with deeper indentation)
+  const blockOf = (task) => {
+    const i = tasks.indexOf(task);
+    if (i < 0) return [task];
+    let j = i + 1;
+    while (j < tasks.length && (tasks[j].indent || 0) > (task.indent || 0)) j++;
+    return tasks.slice(i, j);
+  };
+
   // switch the task list to a project file (null = inbox), creating it if new
   const openProject = (name) => {
     const created = name && !projectExists(name);
@@ -310,12 +336,27 @@ export function App({ initialView = 'home' }) {
     if ((key.upArrow || key.downArrow) && key.shift) {
       // reorder (Cmd+Shift+↑/↓ isn't visible to terminals, so Shift+↑/↓)
       if (tagFilter) return note('Clear the tag filter (/all) to reorder.');
+      const task = tasks[sel];
+      if (!task) return;
       const dir = key.upArrow ? -1 : 1;
-      if (sel + dir >= 0 && sel + dir < tasks.length) {
-        const next = [...tasks];
-        [next[sel], next[sel + dir]] = [next[sel + dir], next[sel]];
+      if ((task.indent || 0) === 0) {
+        // top-level tasks move as a block, sub-tasks riding along
+        const blocks = taskBlocks(tasks);
+        const bi = blocks.findIndex((b) => b.includes(task));
+        if (bi + dir < 0 || bi + dir >= blocks.length) return;
+        [blocks[bi + dir], blocks[bi]] = [blocks[bi], blocks[bi + dir]];
+        const next = blocks.flat();
         persist(next);
-        setSel(sel + dir);
+        setSel(next.indexOf(task));
+      } else {
+        // sub-tasks swap with an adjacent sibling at the same depth
+        const ni = sel + dir;
+        if (ni < 0 || ni >= tasks.length || (tasks[ni].indent || 0) !== (task.indent || 0))
+          return note('Sub-tasks reorder among siblings at the same depth.');
+        const next = [...tasks];
+        [next[sel], next[ni]] = [next[ni], next[sel]];
+        persist(next);
+        setSel(ni);
       }
       return;
     }
@@ -333,11 +374,12 @@ export function App({ initialView = 'home' }) {
     if (key.ctrl && (ch === ' ' || ch === '`' || ch === '\u0000')) {
       const task = visible[sel];
       if (task) {
-        archiveTask(task);
+        const block = blockOf(task); // sub-tasks go along with their parent
+        block.forEach(archiveTask);
         setArchive(loadArchive());
-        persist(tasks.filter((t) => t !== task));
+        persist(tasks.filter((t) => !block.includes(t)));
         setSel((s) => Math.max(0, Math.min(s, visible.length - 2)));
-        note(`Archived: ${task.title}`);
+        note(`Archived: ${task.title}${block.length > 1 ? ` (+${block.length - 1} sub-task${block.length > 2 ? 's' : ''})` : ''}`);
       }
       return;
     }
@@ -345,15 +387,17 @@ export function App({ initialView = 'home' }) {
     if (key.ctrl && ch === 'd') {
       const task = visible[sel];
       if (task) {
-        persist(tasks.filter((t) => t !== task));
+        const block = blockOf(task);
+        persist(tasks.filter((t) => !block.includes(t)));
         setSel((s) => Math.max(0, Math.min(s, visible.length - 2)));
-        note(`Deleted: ${task.title}`);
+        note(`Deleted: ${task.title}${block.length > 1 ? ` (+${block.length - 1} sub-task${block.length > 2 ? 's' : ''})` : ''}`);
       }
       return;
     }
 
-    // Toggl: start/stop tracking the selected task. The first #tag maps to an
-    // existing Toggl project of the same name (no project is ever created).
+    // Toggl: start/stop tracking the selected task. The current project workspace
+    // maps to the Toggl project of the same name; in the inbox the first #tag is
+    // the fallback; no match files it under "Untitled".
     if (key.ctrl && ch === 't') {
       const task = visible[sel];
       if (!task) return;
@@ -369,16 +413,13 @@ export function App({ initialView = 'home' }) {
           })
           .catch((e) => note(`Toggl error stopping: ${e.message}`));
       } else {
-        const tag = getTags(task)[0];
-        const description = task.title.replace(/#[\w][\w/-]*/g, '').replace(/\s{2,}/g, ' ').trim() || task.title;
+        const projName = project || getTags(task)[0]?.slice(1);
+        const description = togglDescription(task.title);
         note('Toggl: starting…');
-        startEntry({ description, tag })
+        startEntry({ description, tag: projName })
           .then(({ entry, project: proj }) => {
             setTracking({ id: entry.id, title: task.title, startedAt: new Date(entry.start).getTime() });
-            note(
-              `Toggl: tracking "${description}"` +
-                (proj ? ` → ${proj.name}` : tag ? ` (no Toggl project named ${tag.slice(1)} — left unassigned)` : '')
-            );
+            note(`Toggl: tracking "${description}" → ${proj.name}`);
           })
           .catch((e) => note(`Toggl error starting: ${e.message}`));
       }
@@ -459,10 +500,40 @@ export function App({ initialView = 'home' }) {
           if (arg !== 'inbox' && !dest) return note('Invalid project name.');
           if ((dest ?? null) === (project ?? null)) return note('Task is already in this list.');
           const created = dest && !projectExists(dest);
-          saveTasks([...loadTasks(dest), task], dest);
-          persist(tasks.filter((t) => t !== task));
+          const block = blockOf(task); // sub-tasks move with their parent
+          saveTasks([...loadTasks(dest), ...block], dest);
+          persist(tasks.filter((t) => !block.includes(t)));
           setSel((s) => Math.max(0, Math.min(s, visible.length - 2)));
           return note(`Moved to ${dest ?? 'inbox'}${created ? ' (new project)' : ''}: ${task.title}`);
+        }
+        if (cmd === 'file') {
+          // sweep: each top-level task whose #tag matches an existing project
+          // moves there (with its sub-tasks); everything else stays put
+          const moved = {};
+          const stay = [];
+          let skip = 0;
+          for (let i = 0; i < tasks.length; i++) {
+            if (skip > 0) {
+              skip--;
+              continue;
+            }
+            const t = tasks[i];
+            const block = blockOf(t);
+            const dest = getTags(t)
+              .map((g) => slugifyProject(g.slice(1)))
+              .find((n) => n && n !== project && projectExists(n));
+            if (dest) {
+              (moved[dest] ||= []).push(...block);
+              skip = block.length - 1;
+            } else stay.push(...block);
+          }
+          const names = Object.keys(moved);
+          if (!names.length) return note('Nothing to file — no #tags match an existing project.');
+          for (const n of names) saveTasks(sortTasks([...loadTasks(n), ...moved[n]]), n);
+          persist(stay);
+          setSel(0);
+          const total = tasks.length - stay.length;
+          return note(`Filed ${total} task${total === 1 ? '' : 's'} → ${names.join(', ')}.`);
         }
         if (cmd === 'tag') {
           // prefer the highlighted suggestion over the partial that was typed
@@ -484,15 +555,9 @@ export function App({ initialView = 'home' }) {
           return note('Tag filter cleared.');
         }
         if (cmd === 'sort') {
-          const next = [...tasks].sort((a, b) => {
-            if (!a.date && !b.date) return 0;
-            if (!a.date) return 1;
-            if (!b.date) return -1;
-            return a.date < b.date ? -1 : a.date > b.date ? 1 : 0;
-          });
-          persist(next);
+          persist(sortTasks(tasks));
           setSel(0);
-          return note('Sorted by due date (undated tasks last).');
+          return note('Sorted by priority, then due date — sub-tasks stay with their parent.');
         }
         if (cmd === 'toggl') {
           const arg = text.split(/\s+/)[1];
@@ -542,13 +607,40 @@ export function App({ initialView = 'home' }) {
       }
       const task = parseInput(text);
       if (!task.title) return;
-      persist([...tasks, task]);
-      setSel(tasks.length);
-      note(`Added: ${formatTask(task)}`);
+      // in the inbox, a #tag matching an existing project files the task there
+      if (!project) {
+        const dest = getTags(task)
+          .map((g) => slugifyProject(g.slice(1)))
+          .find((n) => n && projectExists(n));
+        if (dest) {
+          saveTasks(sortTasks([...loadTasks(dest), task]), dest);
+          return note(`Added to project ${dest} (matched #tag): ${formatTask(task)}`);
+        }
+      }
+      // adding re-sorts the list (priority, then due date); sub-task blocks stay intact
+      const next = sortTasks([...tasks, task]);
+      persist(next);
+      setSel(next.indexOf(task));
+      note(`Added: ${formatTask(task)} — tab nests it under the task above`);
       return;
     }
 
     if (key.tab) {
+      // shift+tab outdents the selected task; tab with an empty input indents
+      // it under the task above (sub-tasks, Obsidian-style nested checklists)
+      if (key.shift || (input === '' && visible[sel])) {
+        if (tagFilter) return note('Clear the tag filter (/all) to change nesting.');
+        const task = visible[sel];
+        if (!task) return;
+        const idx = tasks.indexOf(task);
+        const cur = task.indent || 0;
+        const max = idx > 0 ? (tasks[idx - 1].indent || 0) + 1 : 0;
+        const next = key.shift ? Math.max(0, cur - 1) : Math.min(cur + 1, max);
+        if (next === cur)
+          return note(key.shift ? 'Already a top-level task.' : 'Nothing above to nest under.');
+        persist(tasks.map((t) => (t === task ? { ...t, indent: next } : t)));
+        return;
+      }
       if (tagMenu.length > 0) return insertTag(tagMenu[msel]);
       if (projArgCtx && projMenu.length > 0) return insertProject(projMenu[msel]);
       if (prioCtx && prioMenu.length > 0) return insertPriority(prioMenu[msel]);
@@ -575,9 +667,20 @@ export function App({ initialView = 'home' }) {
         <Box flexDirection="column" marginTop={1}>
           <Text bold>Archive ({archive.length})</Text>
           {archive.length === 0 && <Text dimColor>Nothing archived yet. Ctrl+Space a task to send it here.</Text>}
-          {archive.map((t, i) => (
-            <TaskLine key={i} task={t} selected={i === sel} />
-          ))}
+          {archive.map((t, i) => {
+            const s = archiveSections(t);
+            const prev = i > 0 ? archiveSections(archive[i - 1]) : {};
+            return (
+              <Box key={i} flexDirection="column">
+                {s.year !== prev.year && <Text bold color={ACCENT}>{s.year}</Text>}
+                {(s.year !== prev.year || s.month !== prev.month) && <Text bold>  {s.month}</Text>}
+                {(s.year !== prev.year || s.month !== prev.month || s.week !== prev.week) && (
+                  <Text dimColor>    {s.week}</Text>
+                )}
+                <TaskLine task={t} selected={i === sel} />
+              </Box>
+            );
+          })}
         </Box>
       )}
 

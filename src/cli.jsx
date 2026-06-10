@@ -18,8 +18,9 @@ Inside the app:
   enter (empty input)   toggle done on the selected task
   up/down               select a task
   shift+up/down         reorder the selected task
-  ctrl+space            archive the selected task
-  ctrl+d                delete the selected task
+  tab / shift+tab       nest the selected task under the one above / un-nest
+  ctrl+space            archive the selected task (sub-tasks go along)
+  ctrl+d                delete the selected task (sub-tasks go along)
 
 After entering a date, a priority picker appears — Obsidian Tasks emojis
 (🔺 highest, ⏫ high, 🔼 medium, 🔽 low, ⏬ lowest); enter on "none" skips.

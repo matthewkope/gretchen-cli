@@ -7,7 +7,7 @@ const TASKS_FILE = path.join(DIR, 'tasks.md');
 const ARCHIVE_FILE = path.join(DIR, 'archive.md');
 const PROJECTS_DIR = path.join(DIR, 'projects');
 
-const TASK_RE = /^- \[( |x)\] (.*)$/;
+const TASK_RE = /^(\s*)- \[( |x)\] (.*)$/;
 const TAG_RE = /#[\w][\w/-]*/g;
 
 function ensureDir() {
@@ -32,6 +32,20 @@ export function prioritySuggestions(partial = '') {
   return [{ key: 'none', emoji: '' }, ...PRIORITIES].filter((s) => s.key.startsWith(p));
 }
 
+// priority first (no emoji = Obsidian's "normal", between medium and low),
+// then due date ascending with undated tasks last
+export function compareTasks(a, b) {
+  const rank = (t) => {
+    const i = PRIORITIES.findIndex((p) => p.key === t.priority);
+    return i < 0 ? 2.5 : i; // none → between medium (2) and low (3)
+  };
+  if (rank(a) !== rank(b)) return rank(a) - rank(b);
+  if (!a.date && !b.date) return 0;
+  if (!a.date) return 1;
+  if (!b.date) return -1;
+  return a.date < b.date ? -1 : a.date > b.date ? 1 : 0;
+}
+
 function extractPriority(text) {
   for (const p of PRIORITIES) {
     if (text.includes(p.emoji)) return { priority: p.key, text: text.replace(p.emoji, ' ') };
@@ -40,9 +54,10 @@ function extractPriority(text) {
 }
 
 // Obsidian Tasks emoji format: description, then priority, 📅 due, ✅ done.
+// Sub-tasks are nested checklist lines, indented 4 spaces per level.
 // https://publish.obsidian.md/tasks/
 export function formatTask(task) {
-  let line = `- [${task.done ? 'x' : ' '}] ${task.title}`;
+  let line = `${'    '.repeat(task.indent || 0)}- [${task.done ? 'x' : ' '}] ${task.title}`;
   if (task.priority) line += ` ${priorityEmoji(task.priority)}`;
   if (task.date) line += ` 📅 ${task.date}`;
   if (task.doneDate) line += ` ✅ ${task.doneDate}`;
@@ -52,7 +67,9 @@ export function formatTask(task) {
 export function parseLine(line) {
   const m = line.match(TASK_RE);
   if (!m) return null;
-  let rest = m[2];
+  // tabs, 2-space, or 4-space nesting all map to indent levels
+  const indent = Math.ceil(m[1].replace(/\t/g, '    ').length / 4);
+  let rest = m[3];
   let date = null;
   let doneDate = null;
   // 📅 is current format; @date is the pre-emoji format, migrated on next save
@@ -67,7 +84,26 @@ export function parseLine(line) {
     rest = rest.replace(done[0], '');
   }
   const { priority, text } = extractPriority(rest);
-  return { done: m[1] === 'x', title: text.replace(/\s{2,}/g, ' ').trim(), date, doneDate, priority };
+  return { done: m[2] === 'x', title: text.replace(/\s{2,}/g, ' ').trim(), date, doneDate, priority, indent };
+}
+
+// Groups a flat list into blocks: each top-level task plus its sub-tasks.
+export function taskBlocks(tasks) {
+  const blocks = [];
+  for (let i = 0; i < tasks.length; ) {
+    let j = i + 1;
+    while (j < tasks.length && (tasks[j].indent || 0) > (tasks[i].indent || 0)) j++;
+    blocks.push(tasks.slice(i, j));
+    i = j;
+  }
+  return blocks;
+}
+
+// Block-aware sort: parents are ordered by compareTasks, sub-tasks stay attached.
+export function sortTasks(tasks) {
+  return taskBlocks(tasks)
+    .sort((a, b) => compareTasks(a[0], b[0]))
+    .flat();
 }
 
 export function getTags(task) {
@@ -151,18 +187,54 @@ export function loadAllTasks() {
   return all;
 }
 
-export function loadArchive() {
-  return loadFile(ARCHIVE_FILE, 'Gretchen Archive');
+const MONTHS = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+];
+
+// year/month/week section labels for an archived task, from its ✅ date
+export function archiveSections(task) {
+  const date = task.doneDate || today();
+  const d = new Date(`${date}T12:00:00`);
+  const monday = new Date(d);
+  monday.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+  return {
+    year: date.slice(0, 4),
+    month: MONTHS[d.getMonth()],
+    week: `Week of ${MONTHS[monday.getMonth()]} ${monday.getDate()}`,
+  };
 }
 
+function sortArchive(tasks) {
+  return [...tasks].sort((a, b) => ((b.doneDate || '') < (a.doneDate || '') ? -1 : 1));
+}
+
+export function loadArchive() {
+  return sortArchive(loadFile(ARCHIVE_FILE, 'Gretchen Archive'));
+}
+
+// Markdown stays Obsidian-friendly: tasks in Obsidian Tasks emoji format,
+// grouped newest-first under # year / ## month / ### week headings.
 export function saveArchive(tasks) {
-  saveFile(ARCHIVE_FILE, 'Gretchen Archive', tasks);
+  ensureDir();
+  let out = '';
+  let prev = {};
+  for (const t of sortArchive(tasks)) {
+    const s = archiveSections(t);
+    if (s.year !== prev.year) out += `\n# ${s.year}\n`;
+    if (s.year !== prev.year || s.month !== prev.month) out += `\n## ${s.month}\n`;
+    if (s.year !== prev.year || s.month !== prev.month || s.week !== prev.week) out += `\n### ${s.week}\n\n`;
+    out += `${formatTask(t)}\n`;
+    prev = s;
+  }
+  fs.writeFileSync(ARCHIVE_FILE, out.replace(/^\n/, ''));
 }
 
 export function archiveTask(task) {
   const archive = loadArchive();
-  archive.unshift({ ...task, done: true, doneDate: task.doneDate || today() });
-  saveFile(ARCHIVE_FILE, 'Gretchen Archive', archive);
+  // the archive is flat (grouped by completion week), so nesting is dropped
+  archive.unshift({ ...task, done: true, doneDate: task.doneDate || today(), indent: 0 });
+  saveArchive(archive);
 }
 
 function iso(d) {
@@ -253,7 +325,7 @@ export function parseInput(raw) {
   if (emoji) {
     date = emoji[1];
     title = (title.slice(0, emoji.index) + title.slice(emoji.index + emoji[0].length)).trim();
-    return { done: false, title: title.replace(/\s{2,}/g, ' ').trim(), date, doneDate: null, priority };
+    return { done: false, title: title.replace(/\s{2,}/g, ' ').trim(), date, doneDate: null, priority, indent: 0 };
   }
 
   const at = title.match(new RegExp(`@(${DATE_WORD})\\b`, 'i'));
@@ -269,5 +341,5 @@ export function parseInput(raw) {
     }
   }
 
-  return { done: false, title: title.replace(/\s{2,}/g, ' ').trim(), date, doneDate: null, priority };
+  return { done: false, title: title.replace(/\s{2,}/g, ' ').trim(), date, doneDate: null, priority, indent: 0 };
 }

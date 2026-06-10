@@ -80,7 +80,7 @@ async function context() {
 }
 
 // Match a #tag to an existing Toggl project by name (case-insensitive).
-// Returns null when there is no match — we never create projects.
+// Tags never create their own projects — unmatched entries fall back to "Untitled".
 async function findProject(tag) {
   if (!tag) return null;
   const name = tag.replace(/^#/, '').toLowerCase();
@@ -88,12 +88,23 @@ async function findProject(tag) {
   return projects.find((p) => p.name.toLowerCase() === name) || null;
 }
 
+// the catch-all project for entries whose tag matches nothing; created on first use
+async function untitledProject() {
+  const ctx = await context();
+  let p = ctx.projects.find((p) => p.name.toLowerCase() === 'untitled');
+  if (!p) {
+    p = await api('POST', `/workspaces/${ctx.workspaceId}/projects`, { name: 'Untitled', active: true });
+    ctx.projects.push(p);
+  }
+  return p;
+}
+
 export async function startEntry({ description, tag }) {
   const { workspaceId } = await context();
-  const project = await findProject(tag);
+  const project = (await findProject(tag)) || (await untitledProject());
   const entry = await api('POST', `/workspaces/${workspaceId}/time_entries`, {
     description,
-    project_id: project ? project.id : undefined,
+    project_id: project.id,
     start: new Date().toISOString(),
     duration: -1, // running entry; Toggl stops any previously running one
     created_with: 'gretchen',

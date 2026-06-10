@@ -53,6 +53,22 @@ emojis — 🔺 highest, ⏫ high, 🔼 medium, 🔽 low, ⏬ lowest. Enter on "
 (the default) just submits the task; the emoji is stored between the
 description and the due date, e.g. `- [ ] fix bug ⏫ 📅 2026-06-12`.
 
+## Sub-tasks
+
+Tasks nest, Obsidian-style — indented checklist lines under a parent:
+
+```markdown
+- [ ] plan launch
+    - [ ] write announcement
+    - [ ] book venue
+```
+
+Select a task and press **tab** (with an empty prompt) to nest it under the
+task above; **shift+tab** un-nests. Sub-tasks ride along with their parent:
+archiving, deleting, moving to a project, reordering, and sorting all treat
+a parent and its sub-tasks as one block. Each line is still its own task
+(own date, priority, done state), exactly as Obsidian Tasks treats them.
+
 ## Projects
 
 Sort tasks into projects, each its own markdown file under
