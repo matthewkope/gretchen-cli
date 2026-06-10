@@ -23,7 +23,8 @@ Inside the app:
   ctrl+space            archive the selected task (sub-tasks go along)
   ctrl+d                delete the selected task (sub-tasks go along)
   ctrl+p / ctrl+0       cycle to the next / previous project
-  ctrl+t                start/stop Toggl tracking (after /toggl setup)
+  ctrl+t                start/stop the timer — sessions log to ~/.gretchen/time.csv
+                        (Toggl Track import format; /toggl adds live Toggl sync)
 
 After entering a date, a priority picker appears — Obsidian Tasks emojis
 (🔺 highest, ⏫ high, 🔼 medium, 🔽 low, ⏬ lowest); enter on "none" skips.
@@ -39,7 +40,8 @@ Slash commands (type / to see the menu, tab completes):
   /tag <name>           filter by #tag (/tag lists tags, /all clears)
   /sort <key>           priority · due · tag · description · status
   /stats                task counts at a glance
-  /toggl                connect Toggl time tracking (/toggl off disconnects)
+  /time                 time log summary (/time email <addr> · /time open)
+  /toggl                also push entries live to Toggl (/toggl off disconnects)
   /commands             every command with its aliases
   /exit (or /quit)      quit gretchen
 

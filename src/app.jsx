@@ -8,7 +8,11 @@ import {
   prioritySuggestions, priorityEmoji, PRIO_CTX,
 } from './store.js';
 import { Calendar } from './calendar.jsx';
-import { togglToken, verifyToken, saveToken, clearToken, startEntry, stopEntry, openTokenPage, TOKEN_URL } from './toggl.js';
+import {
+  togglToken, verifyToken, saveToken, clearToken, startEntry, stopEntry, openTokenPage, TOKEN_URL,
+  loadMap, saveMap, mapKey, togglProjectByName,
+} from './toggl.js';
+import { logEntry, timeStats, timeCsvPath, getEmail, setEmail } from './timer.js';
 
 const ACCENT = '#d77757'; // Claude Code's terracotta
 
@@ -24,7 +28,8 @@ const COMMANDS = [
   { name: 'all', desc: 'clear the tag filter' },
   { name: 'sort', desc: 'sort tasks — /sort priority · due · tag · description · status' },
   { name: 'stats', desc: 'task counts at a glance' },
-  { name: 'toggl', desc: 'connect Toggl time tracking — opens the token page, /toggl off' },
+  { name: 'time', desc: 'local time log — /time email <addr> · /time open' },
+  { name: 'toggl', desc: 'push time entries live to Toggl — map <name> <project> · unmap · off' },
   { name: 'commands', desc: 'list all commands and what they do' },
   { name: 'exit', desc: 'quit gretchen' },
 ];
@@ -32,7 +37,7 @@ const COMMANDS = [
 const ALIASES = {
   quit: 'exit', q: 'exit', calendar: 'cal', sortby: 'sort', tags: 'tag',
   cmds: 'commands', clear: 'archive', projects: 'project', proj: 'project', mv: 'move', home: 'inbox',
-  sweep: 'file',
+  sweep: 'file', timer: 'time', csv: 'time',
 };
 
 // reverse map: command name → its aliases, for the /commands panel
@@ -135,8 +140,9 @@ function TaskLine({ task, selected, tracked, elapsed, toggl }) {
         <Text color={task.date < today() && !task.done ? 'red' : 'cyan'}> 📅 {task.date}</Text>
       )}
       {task.doneDate && <Text color="green"> ✅ {task.doneDate}</Text>}
+      {task.src && <Text color="magenta"> [{task.src}]</Text>}
       {tracked && <Text color="red"> ⏺ {fmtElapsed(elapsed)}</Text>}
-      {!tracked && selected && toggl && <Text color="green"> ▶</Text>}
+      {!tracked && selected && <Text color="green"> ▶</Text>}
     </Text>
   );
 }
@@ -176,7 +182,7 @@ function HelpBar({ view, toggl }) {
       <Text dimColor>
         enter add task ("buy milk #home due friday") · ↑/↓ select · shift+↑/↓ reorder ·
         tab/shift+tab nest sub-task · enter (empty) toggle done ·{' '}
-        {toggl ? 'ctrl+t toggl ▶/⏹ · ' : ''}ctrl+e edit · ctrl+space archive · ctrl+d delete · / commands
+        ctrl+t track ▶/⏹ · ctrl+e edit · ctrl+space archive · ctrl+d delete · / commands
       </Text>
     );
   if (view === 'archive') return <Text dimColor>ctrl+u unarchive · ↑/↓ select · esc home</Text>;
@@ -207,6 +213,7 @@ export function App({ initialView = 'home' }) {
   const [editing, setEditing] = useState(null); // task loaded into the input via ctrl+e
   const [tracking, setTracking] = useState(null); // { id, title, startedAt } — running Toggl entry
   const [, setTick] = useState(0);
+  const projectRef = React.useRef(project); // current list, always fresh for key handlers
 
   // re-render once a second while tracking so the elapsed time ticks
   useEffect(() => {
@@ -215,9 +222,30 @@ export function App({ initialView = 'home' }) {
     return () => clearInterval(timer);
   }, [tracking]);
 
-  // the list shown on the home view; ops map back to real indices via identity
-  const visible = tagFilter ? tasks.filter((t) => getTags(t).includes(tagFilter)) : tasks;
+  // the list shown on the home view; ops map back to real indices via identity.
+  // In the inbox, every project's tasks are shown too — they stay in their
+  // project file, and ops route back there via src/srcIdx.
+  const projectTasks = !project
+    ? listProjects().flatMap((n) => loadTasks(n).map((t, i) => ({ ...t, src: n, srcIdx: i })))
+    : [];
+  const allVisible = [...tasks, ...projectTasks];
+  const visible = tagFilter ? allVisible.filter((t) => getTags(t).includes(tagFilter)) : allVisible;
   const realIndex = (i) => tasks.indexOf(visible[i]);
+
+  // a task's block (itself + sub-tasks) as an index range within its own file
+  const blockRange = (list, i) => {
+    let j = i + 1;
+    while (j < list.length && (list[j].indent || 0) > (list[i].indent || 0)) j++;
+    return [i, j];
+  };
+
+  // rewrite the file a project task came from, then re-render to reload it
+  const withSrc = (task, fn) => {
+    const list = loadTasks(task.src);
+    const next = fn(list, task.srcIdx);
+    if (next) saveTasks(next, task.src);
+    setTick((n) => n + 1);
+  };
 
   // popup menus under the input box: slash commands, date suggestions while
   // typing "@..." / "due ...", or existing tags while typing "#..." / "/tag ..."
@@ -315,6 +343,7 @@ export function App({ initialView = 'home' }) {
   const openProject = (name) => {
     const created = name && !projectExists(name);
     if (created) saveTasks([], name);
+    projectRef.current = name;
     setProject(name);
     setTasks(loadTasks(name));
     setSel(0);
@@ -415,7 +444,7 @@ export function App({ initialView = 'home' }) {
       // reorder (Cmd+Shift+↑/↓ isn't visible to terminals, so Shift+↑/↓)
       if (tagFilter) return note('Clear the tag filter (/all) to reorder.');
       const task = tasks[sel];
-      if (!task) return;
+      if (!task) return note('Open the project (/project) to reorder its tasks.');
       const dir = key.upArrow ? -1 : 1;
       if ((task.indent || 0) === 0) {
         // top-level tasks move as a block, sub-tasks riding along
@@ -452,6 +481,17 @@ export function App({ initialView = 'home' }) {
     if (key.ctrl && (ch === ' ' || ch === '`' || ch === '\u0000')) {
       const task = visible[sel];
       if (task) {
+        if (task.src) {
+          // project task shown in the inbox: archive it out of its own file
+          withSrc(task, (list, i) => {
+            const [a, b] = blockRange(list, i);
+            list.slice(a, b).forEach(archiveTask);
+            return [...list.slice(0, a), ...list.slice(b)];
+          });
+          setArchive(loadArchive());
+          setSel((s) => Math.max(0, Math.min(s, visible.length - 2)));
+          return note(`Archived from ${task.src}: ${task.title}`);
+        }
         const block = blockOf(task); // sub-tasks go along with their parent
         block.forEach(archiveTask);
         setArchive(loadArchive());
@@ -477,6 +517,14 @@ export function App({ initialView = 'home' }) {
     if (key.ctrl && ch === 'd') {
       const task = visible[sel];
       if (task) {
+        if (task.src) {
+          withSrc(task, (list, i) => {
+            const [a, b] = blockRange(list, i);
+            return [...list.slice(0, a), ...list.slice(b)];
+          });
+          setSel((s) => Math.max(0, Math.min(s, visible.length - 2)));
+          return note(`Deleted from ${task.src}: ${task.title}`);
+        }
         const block = blockOf(task);
         persist(tasks.filter((t) => !block.includes(t)));
         setSel((s) => Math.max(0, Math.min(s, visible.length - 2)));
@@ -490,38 +538,64 @@ export function App({ initialView = 'home' }) {
     if (key.ctrl && (ch === 'p' || ch === '0' || ch === 'o')) {
       const items = [null, ...listProjects()];
       const dir = ch === 'p' ? 1 : -1;
-      const next = items[(items.indexOf(project) + dir + items.length) % items.length];
+      // step from the ref, not render state — rapid presses land before the
+      // re-render, and stepping from a stale list makes cycling feel stuck
+      const next = items[(items.indexOf(projectRef.current) + dir + items.length) % items.length];
+      projectRef.current = next;
       openProject(next);
       return note(next ? `Project: ${next}` : 'Inbox.');
     }
 
-    // Toggl: start/stop tracking the selected task. The current project workspace
-    // maps to the Toggl project of the same name; in the inbox the first #tag is
-    // the fallback; no match files it under "Untitled".
+    // Toggl: start/stop tracking the selected task. The gretchen project is
+    // created in Toggl if missing; inbox tasks fall back to their first #tag
+    // (match-only), then "Untitled".
     if (key.ctrl && ch === 't') {
       const task = visible[sel];
       if (!task) return;
-      if (!toggl || !togglToken())
-        return note('Toggl is off — run /toggl to set it up.');
+
+      // close out the running session: append the local CSV row, stop Toggl
+      const finish = (t) => {
+        logEntry({
+          description: togglDescription(t.title),
+          project: t.project || '',
+          tags: t.tags || [],
+          startedAt: t.startedAt,
+          stoppedAt: Date.now(),
+        });
+        if (t.id) stopEntry(t.id).catch((e) => note(`Logged locally; Toggl stop failed: ${e.message}`));
+      };
+
       if (tracking && tracking.title === task.title) {
         const elapsed = fmtElapsed(Date.now() - tracking.startedAt);
-        note('Toggl: stopping…');
-        stopEntry(tracking.id)
-          .then(() => {
-            setTracking(null);
-            note(`Toggl: stopped "${tracking.title}" after ${elapsed}`);
-          })
-          .catch((e) => note(`Toggl error stopping: ${e.message}`));
-      } else {
-        const projName = project || getTags(task)[0]?.slice(1);
-        const description = togglDescription(task.title);
+        finish(tracking);
+        setTracking(null);
+        return note(
+          `⏹ ${elapsed} on "${togglDescription(tracking.title)}" — logged to time.csv${tracking.id ? ' + Toggl' : ''}`
+        );
+      }
+
+      if (tracking) finish(tracking); // switching tasks: the old session is logged first
+
+      const projName = project || task.src || '';
+      const description = togglDescription(task.title);
+      const session = {
+        id: null,
+        title: task.title,
+        startedAt: Date.now(),
+        project: projName,
+        tags: getTags(task).map((g) => g.slice(1)),
+      };
+      setTracking(session);
+      if (toggl && togglToken()) {
         note('Toggl: starting…');
-        startEntry({ description, tag: projName })
+        startEntry({ description, project: projName, tag: getTags(task)[0] })
           .then(({ entry, project: proj }) => {
-            setTracking({ id: entry.id, title: task.title, startedAt: new Date(entry.start).getTime() });
-            note(`Toggl: tracking "${description}" → ${proj.name}`);
+            setTracking({ ...session, id: entry.id, startedAt: new Date(entry.start).getTime() });
+            note(`⏺ tracking "${description}" → ${proj.name} (Toggl + time.csv)`);
           })
-          .catch((e) => note(`Toggl error starting: ${e.message}`));
+          .catch((e) => note(`⏺ tracking "${description}" locally (Toggl start failed: ${e.message})`));
+      } else {
+        note(`⏺ tracking "${description}" — ctrl+t stops · /time shows the log`);
       }
       return;
     }
@@ -543,6 +617,14 @@ export function App({ initialView = 'home' }) {
         editInput(() => '');
         const updated = text ? parseInput(text) : null;
         if (!updated?.title) return note('Edit cancelled.');
+        if (target.src) {
+          withSrc(target, (list, i) =>
+            list.map((x, j) =>
+              j === i ? { ...x, title: updated.title, date: updated.date, priority: updated.priority } : x
+            )
+          );
+          return note(`Updated in ${target.src}: ${updated.title}`);
+        }
         const merged = { ...target, title: updated.title, date: updated.date, priority: updated.priority };
         persist(tasks.map((t) => (t === target ? merged : t)));
         return note(`Updated: ${formatTask(merged).trim()}`);
@@ -551,6 +633,14 @@ export function App({ initialView = 'home' }) {
         // toggle done on selected task
         const task = visible[sel];
         if (task) {
+          if (task.src) {
+            withSrc(task, (list, i) =>
+              list.map((x, j) =>
+                j === i ? { ...x, done: !x.done, doneDate: x.done ? null : today() } : x
+              )
+            );
+            return;
+          }
           persist(
             tasks.map((t) =>
               t === task ? { ...t, done: !t.done, doneDate: t.done ? null : today() } : t
@@ -618,8 +708,19 @@ export function App({ initialView = 'home' }) {
           if (!task) return note('No task selected.');
           const dest = arg === 'inbox' ? null : slugifyProject(arg);
           if (arg !== 'inbox' && !dest) return note('Invalid project name.');
-          if ((dest ?? null) === (project ?? null)) return note('Task is already in this list.');
+          if ((dest ?? null) === (task.src ?? project ?? null)) return note('Task is already in that list.');
           const created = dest && !projectExists(dest);
+          if (task.src) {
+            // project task selected from the inbox view: pull it out of its file
+            const list = loadTasks(task.src);
+            const [a, b] = blockRange(list, task.srcIdx);
+            const block = list.slice(a, b).map(({ src, srcIdx, ...t }) => t);
+            saveTasks([...list.slice(0, a), ...list.slice(b)], task.src);
+            if (dest) saveTasks([...loadTasks(dest), ...block], dest);
+            else persist([...tasks, ...block]);
+            setTick((n) => n + 1);
+            return note(`Moved ${task.src} → ${dest ?? 'inbox'}: ${task.title}`);
+          }
           const block = blockOf(task); // sub-tasks move with their parent
           saveTasks([...loadTasks(dest), ...block], dest);
           persist(tasks.filter((t) => !block.includes(t)));
@@ -685,10 +786,66 @@ export function App({ initialView = 'home' }) {
           setSel(0);
           return note(`Sorted by ${k.key} (${k.desc}) — sub-tasks stay with their parent.`);
         }
+        if (cmd === 'time') {
+          const [, arg, value] = text.split(/\s+/);
+          if (arg === 'email') {
+            if (!value)
+              return note(
+                getEmail()
+                  ? `Import email: ${getEmail()} — /time email <addr> changes it.`
+                  : 'No email set — /time email you@example.com (Toggl import uses it to match you).'
+              );
+            setEmail(value);
+            return note(`Import email set to ${value} — new time.csv rows will carry it.`);
+          }
+          if (arg === 'open') {
+            import('node:child_process').then(({ spawn }) =>
+              spawn('open', [timeCsvPath()], { detached: true, stdio: 'ignore' }).unref()
+            );
+            return note(`Opening ${timeCsvPath()}`);
+          }
+          const s = timeStats();
+          return note(
+            s.entries === 0
+              ? `No time entries yet — ctrl+t on a task starts the timer. Log: ${timeCsvPath()}`
+              : `${s.entries} entr${s.entries === 1 ? 'y' : 'ies'} · ${s.today} today · ${s.total} total · ${timeCsvPath()}${getEmail() ? '' : ' — set /time email for Toggl import'}`
+          );
+        }
         if (cmd === 'toggl') {
-          const arg = text.split(/\s+/)[1];
+          const [, arg, ...rest] = text.split(/\s+/);
+          // /toggl map — route a gretchen project or #tag to a specific Toggl project
+          if (arg === 'map') {
+            const map = loadMap();
+            const [from, ...toParts] = rest;
+            const to = toParts.join(' ');
+            if (!from) {
+              const list = Object.entries(map).map(([k, v]) => `${k} → ${v}`).join(' · ');
+              return note(list ? `Toggl mappings: ${list} — /toggl unmap <name> removes.` : 'No mappings yet. /toggl map <project-or-#tag> <toggl project>.');
+            }
+            if (!to) return note('Usage: /toggl map <project-or-#tag> <toggl project>');
+            if (!toggl || !togglToken()) return note('Connect Toggl first — /toggl opens setup.');
+            note('Toggl: checking project…');
+            togglProjectByName(to)
+              .then((p) => {
+                if (!p) return note(`No Toggl project named "${to}" — create it in Toggl first, or check the spelling.`);
+                map[mapKey(from)] = p.name;
+                saveMap(map);
+                note(`Mapped ${from.replace(/^#/, '')} → Toggl project ${p.name}.`);
+              })
+              .catch((e) => note(`Toggl error: ${e.message}`));
+            return;
+          }
+          if (arg === 'unmap') {
+            const map = loadMap();
+            const from = mapKey(rest[0] || '');
+            if (!from || !(from in map)) return note(`No mapping for "${rest[0] || ''}" — /toggl map lists them.`);
+            const was = map[from];
+            delete map[from];
+            saveMap(map);
+            return note(`Unmapped ${from} (was → ${was}).`);
+          }
           if (!arg && toggl)
-            return note('Toggl is on — ctrl+t starts/stops tracking the selected task. /toggl off disconnects, /toggl setup reconnects.');
+            return note('Toggl is on — ctrl+t tracks the selected task · /toggl map routes projects/tags · /toggl off disconnects.');
           if (!arg || arg === 'setup') {
             // open the browser on the profile page and wait for the paste
             openTokenPage();
@@ -752,6 +909,7 @@ export function App({ initialView = 'home' }) {
         if (tagFilter) return note('Clear the tag filter (/all) to change nesting.');
         const task = visible[sel];
         if (!task) return;
+        if (task.src) return note(`Open the project (/project ${task.src}) to change nesting.`);
         const idx = tasks.indexOf(task);
         const cur = task.indent || 0;
         const max = idx > 0 ? (tasks[idx - 1].indent || 0) + 1 : 0;
@@ -825,7 +983,7 @@ export function App({ initialView = 'home' }) {
           )}
           {visible.map((t, i) => (
             <TaskLine
-              key={realIndex(i)}
+              key={visible[i].src ? `${visible[i].src}:${visible[i].srcIdx}` : `inbox:${realIndex(i)}`}
               task={t}
               selected={i === sel}
               tracked={toggl && tracking?.title === t.title}

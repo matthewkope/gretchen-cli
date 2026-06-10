@@ -6,7 +6,27 @@ import { spawn } from 'node:child_process';
 // Toggl Track API v9. Auth token comes from $TOGGL_API_TOKEN or
 // ~/.gretchen/toggl-token (the token is on https://track.toggl.com/profile).
 const TOKEN_FILE = path.join(os.homedir(), '.gretchen', 'toggl-token');
+const MAP_FILE = path.join(os.homedir(), '.gretchen', 'toggl-map.json');
 const BASE = 'https://api.track.toggl.com/api/v9';
+
+// manual routing overrides: gretchen project/tag name → Toggl project name.
+// Keys are stored normalized (no leading #, lowercase).
+export function mapKey(s) {
+  return s?.replace(/^#/, '').toLowerCase();
+}
+
+export function loadMap() {
+  try {
+    return JSON.parse(fs.readFileSync(MAP_FILE, 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+export function saveMap(map) {
+  fs.mkdirSync(path.dirname(MAP_FILE), { recursive: true });
+  fs.writeFileSync(MAP_FILE, `${JSON.stringify(map, null, 2)}\n`);
+}
 
 export function togglToken() {
   if (process.env.TOGGL_API_TOKEN) return process.env.TOGGL_API_TOKEN.trim();
@@ -88,20 +108,35 @@ async function findProject(tag) {
   return projects.find((p) => p.name.toLowerCase() === name) || null;
 }
 
-// the catch-all project for entries whose tag matches nothing; created on first use
-async function untitledProject() {
+// look up an existing Toggl project by exact name (for validating /toggl map)
+export async function togglProjectByName(name) {
+  const { projects } = await context();
+  return projects.find((p) => p.name.toLowerCase() === name.toLowerCase()) || null;
+}
+
+// find a Toggl project by name, creating it when it doesn't exist yet
+async function findOrCreateProject(name) {
   const ctx = await context();
-  let p = ctx.projects.find((p) => p.name.toLowerCase() === 'untitled');
+  let p = ctx.projects.find((p) => p.name.toLowerCase() === name.toLowerCase());
   if (!p) {
-    p = await api('POST', `/workspaces/${ctx.workspaceId}/projects`, { name: 'Untitled', active: true });
+    p = await api('POST', `/workspaces/${ctx.workspaceId}/projects`, { name, active: true });
     ctx.projects.push(p);
   }
   return p;
 }
 
-export async function startEntry({ description, tag }) {
+// Routing, in priority order: a /toggl map override for the gretchen project
+// or tag wins; then the gretchen project name (its Toggl counterpart is
+// created if missing); then the #tag (match-only); then "Untitled".
+export async function startEntry({ description, project: projectName, tag }) {
   const { workspaceId } = await context();
-  const project = (await findProject(tag)) || (await untitledProject());
+  const map = loadMap();
+  const mapped = map[mapKey(projectName)] ?? map[mapKey(tag)];
+  const project = mapped
+    ? await findOrCreateProject(mapped)
+    : projectName
+    ? await findOrCreateProject(projectName)
+    : (await findProject(tag)) || (await findOrCreateProject('Untitled'));
   const entry = await api('POST', `/workspaces/${workspaceId}/time_entries`, {
     description,
     project_id: project.id,

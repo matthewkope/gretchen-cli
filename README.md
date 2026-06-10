@@ -85,13 +85,28 @@ aggregates due dates from all of them.
   project is filed into it
 - **ctrl+p / ctrl+0** cycle forward/back through inbox and projects
 
-## Toggl time tracking (optional)
+## Time tracking
+
+**ctrl+t** starts/stops a timer on the selected task, with a live ⏺ elapsed
+counter. No account needed: every session is appended to
+`~/.gretchen/time.csv`, whose columns (`Email, Project, Description,
+Start date, Start time, Duration, Tags`) follow Toggl Track's CSV import
+template — so the file uploads straight into track.toggl.com, and being plain
+CSV it works in spreadsheets or anywhere else. Switching tasks mid-track logs
+the old session and starts the new one.
+
+- `/time` — entry count, time logged today, total, and the CSV path
+- `/time email you@example.com` — sets the email column (Toggl's importer
+  uses it to match entries to you)
+- `/time open` — opens the CSV in your default app
+
+### Live Toggl sync (optional)
 
 `/toggl` opens your Toggl profile page; paste the API token into the prompt
-and you're connected. **ctrl+t** then starts/stops tracking the selected task
-with a live ⏺ elapsed timer — entries are named after the task text and filed
-under the Toggl project matching the current Gretchen project (or first
-`#tag`). `/toggl off` disconnects.
+and ctrl+t entries are *also* pushed to Toggl in real time — named after the
+task text and filed under the Toggl project matching the current Gretchen
+project (or first `#tag`; `/toggl map` overrides the routing). The local CSV
+is still written either way. `/toggl off` goes back to local-only.
 
 ## Slash commands
 
@@ -107,7 +122,8 @@ under the Toggl project matching the current Gretchen project (or first
 | `/archive`         | archive all completed tasks (`/clear`)              |
 | `/archived`        | view the archive (`ctrl+u` unarchives)              |
 | `/stats`           | open / done / archived / due / overdue / projects   |
-| `/toggl`           | connect or disconnect Toggl (`/toggl off`)          |
+| `/time`            | local time log — `email <addr>`, `open` (`/timer`)  |
+| `/toggl`           | also push entries live to Toggl (`/toggl off`)      |
 | `/commands`        | full command list with aliases (`/cmds`)            |
 | `/exit`            | quit (`/quit`, `/q`, or ctrl+c)                     |
 
@@ -122,7 +138,7 @@ under the Toggl project matching the current Gretchen project (or first
 | `ctrl+e`              | edit the selected task in the prompt         |
 | `ctrl+space`          | archive the selected task (+ sub-tasks)      |
 | `ctrl+d`              | delete the selected task (+ sub-tasks)       |
-| `ctrl+t`              | start/stop Toggl tracking                    |
+| `ctrl+t`              | start/stop the timer (logs to time.csv)      |
 | `ctrl+p` / `ctrl+0`   | next / previous project                      |
 | `esc`                 | back home / close panel / cancel edit        |
 
@@ -143,6 +159,7 @@ Everything is plain markdown you can edit by hand (or open in Obsidian):
 - `~/.gretchen/tasks.md` — the inbox
 - `~/.gretchen/projects/<name>.md` — one file per project
 - `~/.gretchen/archive.md` — archived tasks, grouped by year/month/week
+- `~/.gretchen/time.csv` — time entries, Toggl-import-ready
 - `~/.gretchen/toggl-token` — Toggl API token, if connected
 
 ## Development
