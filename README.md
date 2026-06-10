@@ -44,6 +44,10 @@ space), it's replaced inline with `📅 2026-06-12`. And typing `@` or `due `
 opens a date picker under the prompt — upcoming days, next week, in 2 weeks —
 navigate with `↑/↓`, insert with tab or enter.
 
+Tags get the same treatment: typing `#` lists your existing tags with task
+counts, filtered as you keep typing — `↑/↓` to select, tab or enter to insert.
+`/tag ` shows the same picker for choosing a filter.
+
 ## Keys
 
 | Key                | Action                                  |

@@ -134,6 +134,17 @@ export function dateSuggestions(partial = '') {
   return list.filter((s) => s.label.startsWith(p) || s.date.startsWith(p));
 }
 
+// Existing tags (most used first) matching what's typed so far.
+export function tagSuggestions(tasks, partial = '') {
+  const p = partial.toLowerCase().replace(/^#/, '');
+  const counts = {};
+  for (const t of tasks) for (const tag of getTags(t)) counts[tag] = (counts[tag] || 0) + 1;
+  return Object.entries(counts)
+    .filter(([tag]) => tag.slice(1).toLowerCase().startsWith(p))
+    .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))
+    .map(([tag, count]) => ({ tag, count }));
+}
+
 // Matches an unfinished "@..." or "due ..." date at the end of the input.
 export const DATE_CTX = /(@|\bdue:?\s+)([\w-]*)$/i;
 

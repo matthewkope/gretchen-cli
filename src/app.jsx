@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Box, Text, useApp, useInput } from 'ink';
 import {
   loadTasks, saveTasks, loadArchive, saveArchive, archiveTask, parseInput, formatTask,
-  getTags, today, dateSuggestions, autoFormatDates, DATE_CTX,
+  getTags, today, dateSuggestions, tagSuggestions, autoFormatDates, DATE_CTX,
 } from './store.js';
 import { Calendar } from './calendar.jsx';
 
@@ -17,11 +17,32 @@ const COMMANDS = [
   { name: 'sort', desc: 'sort tasks by due date' },
   { name: 'stats', desc: 'task counts at a glance' },
   { name: 'refresh', desc: 'reload tasks from disk' },
+  { name: 'commands', desc: 'list all commands and what they do' },
   { name: 'help', desc: 'how to use gretchen' },
   { name: 'exit', desc: 'quit gretchen' },
 ];
 
-const ALIASES = { quit: 'exit', q: 'exit', calendar: 'cal', sortby: 'sort', tags: 'tag', reload: 'refresh' };
+const ALIASES = { quit: 'exit', q: 'exit', calendar: 'cal', sortby: 'sort', tags: 'tag', reload: 'refresh', cmds: 'commands' };
+
+// reverse map: command name → its aliases, for the /commands panel
+const ALIAS_NAMES = {};
+for (const [alias, name] of Object.entries(ALIASES)) (ALIAS_NAMES[name] ||= []).push(`/${alias}`);
+
+function CommandsPanel({ accent }) {
+  return (
+    <Box flexDirection="column" borderStyle="round" borderColor={accent} paddingX={1} marginTop={1}>
+      <Text bold color={accent}>Commands</Text>
+      {COMMANDS.map((c) => (
+        <Text key={c.name}>
+          <Text color={accent}>{`/${c.name}`.padEnd(11)}</Text>
+          <Text>{c.desc}</Text>
+          {ALIAS_NAMES[c.name] && <Text dimColor> · also {ALIAS_NAMES[c.name].join(', ')}</Text>}
+        </Text>
+      ))}
+      <Text dimColor>type / to filter the menu · tab completes · esc closes this</Text>
+    </Box>
+  );
+}
 
 function matchCommands(input) {
   if (!input.startsWith('/')) return [];
@@ -110,17 +131,29 @@ export function App({ initialView = 'home' }) {
   const [flash, setFlash] = useState(null);
   const [tagFilter, setTagFilter] = useState(null);
   const [menuSel, setMenuSel] = useState(0);
+  const [panel, setPanel] = useState(null);
 
   // the list shown on the home view; ops map back to real indices via identity
   const visible = tagFilter ? tasks.filter((t) => getTags(t).includes(tagFilter)) : tasks;
   const realIndex = (i) => tasks.indexOf(visible[i]);
 
-  // popup menus under the input box: slash commands, or date suggestions
-  // while typing "@..." / "due ..."
+  // popup menus under the input box: slash commands, date suggestions while
+  // typing "@..." / "due ...", or existing tags while typing "#..." / "/tag ..."
   const cmdMenu = view === 'home' ? matchCommands(input) : [];
   const dateCtx = view === 'home' && !input.startsWith('/') ? input.match(DATE_CTX) : null;
   const dateMenu = dateCtx ? dateSuggestions(dateCtx[2]) : [];
-  const menuLen = input.startsWith('/') ? cmdMenu.length : dateMenu.length;
+  const hashCtx = view === 'home' && !input.startsWith('/') ? input.match(/#[\w/-]*$/) : null;
+  const tagArgCtx = view === 'home' && /^\/tags?\s+/.test(input) ? input.match(/#?[\w/-]*$/) : null;
+  const tagMenu = hashCtx
+    ? tagSuggestions(tasks, hashCtx[0])
+    : tagArgCtx
+    ? tagSuggestions(tasks, tagArgCtx[0])
+    : [];
+  const menuLen = input.startsWith('/')
+    ? (tagArgCtx && tagMenu.length > 0 ? tagMenu.length : cmdMenu.length)
+    : hashCtx
+    ? tagMenu.length
+    : dateMenu.length;
   const msel = Math.min(menuSel, Math.max(0, menuLen - 1));
 
   const editInput = (fn) => {
@@ -131,6 +164,12 @@ export function App({ initialView = 'home' }) {
   const insertDate = (s) => {
     if (!dateCtx || !s) return;
     editInput((v) => `${v.slice(0, dateCtx.index)}📅 ${s.date} `);
+  };
+
+  const insertTag = (s) => {
+    if (!s) return;
+    if (hashCtx) editInput((v) => `${v.slice(0, hashCtx.index)}${s.tag} `);
+    else if (tagArgCtx) editInput((v) => `${v.slice(0, tagArgCtx.index)}${s.tag}`);
   };
 
   const persist = (next) => {
@@ -166,6 +205,10 @@ export function App({ initialView = 'home' }) {
     }
 
     // --- home view ---
+    if (key.escape) {
+      if (panel) setPanel(null);
+      return;
+    }
     if ((key.upArrow || key.downArrow) && key.shift) {
       // reorder (Cmd+Shift+↑/↓ isn't visible to terminals, so Shift+↑/↓)
       if (tagFilter) return note('Clear the tag filter (/all) to reorder.');
@@ -212,9 +255,10 @@ export function App({ initialView = 'home' }) {
     }
 
     if (key.return) {
-      // with the date picker open, enter inserts the highlighted date;
+      // with the date or tag picker open, enter inserts the highlighted entry;
       // the next enter submits the task
       if (dateMenu.length > 0) return insertDate(dateMenu[msel]);
+      if (hashCtx && tagMenu.length > 0) return insertTag(tagMenu[msel]);
       const text = input.trim();
       if (!text) {
         // toggle done on selected task
@@ -232,6 +276,8 @@ export function App({ initialView = 'home' }) {
       if (text.startsWith('/')) {
         // exact/unique-prefix match wins; otherwise run the highlighted menu entry
         const cmd = resolveCommand(text) || cmdMenu[msel]?.name;
+        setPanel(null);
+        if (cmd === 'commands') return setPanel('commands');
         if (cmd === 'exit') return exit();
         if (cmd === 'cal') return setView('calendar');
         if (cmd === 'archive') {
@@ -239,11 +285,12 @@ export function App({ initialView = 'home' }) {
           return setView('archive');
         }
         if (cmd === 'help') {
-          note('Add tasks with #tags and dates: "@today", "due friday", "due 2026-06-15" → 📅. Type / for commands.');
+          note('Add tasks with #tags and dates: "@today", "due friday", "due 2026-06-15" → 📅. /commands lists every command.');
           return;
         }
         if (cmd === 'tag') {
-          const arg = text.split(/\s+/)[1];
+          // prefer the highlighted suggestion over the partial that was typed
+          const arg = (tagArgCtx && tagMenu[msel]?.tag) || text.split(/\s+/)[1];
           if (!arg) {
             const counts = {};
             for (const t of tasks) for (const tag of getTags(t)) counts[tag] = (counts[tag] || 0) + 1;
@@ -306,11 +353,16 @@ export function App({ initialView = 'home' }) {
     }
 
     if (key.tab) {
+      if (tagMenu.length > 0) return insertTag(tagMenu[msel]);
       if (dateMenu.length > 0) return insertDate(dateMenu[msel]);
       if (cmdMenu.length > 0) editInput(() => `/${cmdMenu[msel].name}`);
       return;
     }
-    if (key.backspace || key.delete) return editInput((v) => v.slice(0, -1));
+    if (key.backspace || key.delete) {
+      // with the command menu open, one backspace dismisses the whole thing
+      if (input.startsWith('/')) return editInput(() => '');
+      return editInput((v) => v.slice(0, -1));
+    }
     if (ch && !key.ctrl && !key.meta && !key.escape && !key.tab)
       editInput((v) => autoFormatDates(v + ch));
   });
@@ -341,12 +393,13 @@ export function App({ initialView = 'home' }) {
           {visible.map((t, i) => (
             <TaskLine key={realIndex(i)} task={t} selected={i === sel} />
           ))}
+          {panel === 'commands' && <CommandsPanel accent={ACCENT} />}
           <Box borderStyle="round" borderColor={ACCENT} paddingX={1} marginTop={1}>
             <Text color={ACCENT}>{'> '}</Text>
             <Text wrap="truncate-start">{input}</Text>
             <Text color={ACCENT}>▌</Text>
           </Box>
-          {input.startsWith('/') && (
+          {input.startsWith('/') && !(tagArgCtx && tagMenu.length > 0) && (
             <Box flexDirection="column" paddingX={2}>
               {cmdMenu.map((c, i) => (
                 <Text key={c.name}>
@@ -371,6 +424,23 @@ export function App({ initialView = 'home' }) {
                 </Text>
               ))}
               <Text dimColor>↑/↓ select · tab or enter to insert</Text>
+            </Box>
+          )}
+          {tagMenu.length > 0 && (
+            <Box flexDirection="column" paddingX={2}>
+              {tagMenu.map((s, i) => (
+                <Text key={s.tag}>
+                  <Text color={i === msel ? ACCENT : 'yellow'} bold={i === msel}>
+                    {i === msel ? '❯ ' : '  '}{s.tag.padEnd(14)}
+                  </Text>
+                  <Text dimColor>
+                    {s.count} task{s.count === 1 ? '' : 's'}
+                  </Text>
+                </Text>
+              ))}
+              <Text dimColor>
+                {tagArgCtx ? '↑/↓ select · tab completes · enter filters' : '↑/↓ select · tab or enter to insert'}
+              </Text>
             </Box>
           )}
         </Box>
