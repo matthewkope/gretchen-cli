@@ -258,11 +258,9 @@ export function App({ initialView = 'home' }) {
             <TaskLine key={i} task={t} selected={i === sel} />
           ))}
           <Box borderStyle="round" borderColor={ACCENT} paddingX={1} marginTop={1}>
-            <Text>
-              <Text color={ACCENT}>{'> '}</Text>
-              {input}
-              <Text color={ACCENT}>▌</Text>
-            </Text>
+            <Text color={ACCENT}>{'> '}</Text>
+            <Text wrap="truncate-start">{input}</Text>
+            <Text color={ACCENT}>▌</Text>
           </Box>
           {input.startsWith('/') && (
             <Box flexDirection="column" paddingX={2}>
