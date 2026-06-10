@@ -48,6 +48,21 @@ Tags get the same treatment: typing `#` lists your existing tags with task
 counts, filtered as you keep typing — `↑/↓` to select, tab or enter to insert.
 `/tag ` shows the same picker for choosing a filter.
 
+After a date is set, a priority picker appears, using the Obsidian Tasks
+emojis — 🔺 highest, ⏫ high, 🔼 medium, 🔽 low, ⏬ lowest. Enter on "none"
+(the default) just submits the task; the emoji is stored between the
+description and the due date, e.g. `- [ ] fix bug ⏫ 📅 2026-06-12`.
+
+## Projects
+
+Sort tasks into projects, each its own markdown file under
+`~/.gretchen/projects/`:
+
+- `/project <name>` opens a project, creating it if it doesn't exist
+- `/project` lists projects; typing `/project ` opens a picker with counts
+- `/move <name>` moves the selected task into a project (`/move inbox` back)
+- `/inbox` returns to the main list; the calendar shows dates from everywhere
+
 ## Keys
 
 | Key                | Action                                  |

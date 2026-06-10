@@ -5,6 +5,7 @@ import path from 'node:path';
 const DIR = path.join(os.homedir(), '.gretchen');
 const TASKS_FILE = path.join(DIR, 'tasks.md');
 const ARCHIVE_FILE = path.join(DIR, 'archive.md');
+const PROJECTS_DIR = path.join(DIR, 'projects');
 
 const TASK_RE = /^- \[( |x)\] (.*)$/;
 const TAG_RE = /#[\w][\w/-]*/g;
@@ -13,10 +14,36 @@ function ensureDir() {
   fs.mkdirSync(DIR, { recursive: true });
 }
 
-// Obsidian Tasks emoji format: description first, then 📅 due and ✅ done at the end.
+// Obsidian Tasks priorities, in rank order. No emoji = normal priority.
+export const PRIORITIES = [
+  { key: 'highest', emoji: '🔺' },
+  { key: 'high', emoji: '⏫' },
+  { key: 'medium', emoji: '🔼' },
+  { key: 'low', emoji: '🔽' },
+  { key: 'lowest', emoji: '⏬' },
+];
+
+export function priorityEmoji(key) {
+  return PRIORITIES.find((p) => p.key === key)?.emoji || '';
+}
+
+export function prioritySuggestions(partial = '') {
+  const p = partial.toLowerCase();
+  return [{ key: 'none', emoji: '' }, ...PRIORITIES].filter((s) => s.key.startsWith(p));
+}
+
+function extractPriority(text) {
+  for (const p of PRIORITIES) {
+    if (text.includes(p.emoji)) return { priority: p.key, text: text.replace(p.emoji, ' ') };
+  }
+  return { priority: null, text };
+}
+
+// Obsidian Tasks emoji format: description, then priority, 📅 due, ✅ done.
 // https://publish.obsidian.md/tasks/
 export function formatTask(task) {
   let line = `- [${task.done ? 'x' : ' '}] ${task.title}`;
+  if (task.priority) line += ` ${priorityEmoji(task.priority)}`;
   if (task.date) line += ` 📅 ${task.date}`;
   if (task.doneDate) line += ` ✅ ${task.doneDate}`;
   return line;
@@ -39,7 +66,8 @@ export function parseLine(line) {
     doneDate = done[1];
     rest = rest.replace(done[0], '');
   }
-  return { done: m[1] === 'x', title: rest.replace(/\s{2,}/g, ' ').trim(), date, doneDate };
+  const { priority, text } = extractPriority(rest);
+  return { done: m[1] === 'x', title: text.replace(/\s{2,}/g, ' ').trim(), date, doneDate, priority };
 }
 
 export function getTags(task) {
@@ -64,12 +92,63 @@ function saveFile(file, header, tasks) {
   fs.writeFileSync(file, `# ${header}\n\n${tasks.map(formatTask).join('\n')}\n`);
 }
 
-export function loadTasks() {
-  return loadFile(TASKS_FILE, 'Gretchen Tasks');
+// project = null/undefined → the inbox (tasks.md); otherwise a file in projects/
+function tasksFile(project) {
+  return project ? path.join(PROJECTS_DIR, `${project}.md`) : TASKS_FILE;
 }
 
-export function saveTasks(tasks) {
-  saveFile(TASKS_FILE, 'Gretchen Tasks', tasks);
+function tasksHeader(project) {
+  return project ? `Project: ${project}` : 'Gretchen Tasks';
+}
+
+export function loadTasks(project = null) {
+  if (project) fs.mkdirSync(PROJECTS_DIR, { recursive: true });
+  return loadFile(tasksFile(project), tasksHeader(project));
+}
+
+export function saveTasks(tasks, project = null) {
+  if (project) fs.mkdirSync(PROJECTS_DIR, { recursive: true });
+  saveFile(tasksFile(project), tasksHeader(project), tasks);
+}
+
+// "my cool project" → "my-cool-project"; returns null if nothing usable remains
+export function slugifyProject(name) {
+  const slug = name.toLowerCase().trim().replace(/\s+/g, '-').replace(/[^\w-]/g, '');
+  return slug || null;
+}
+
+export function listProjects() {
+  if (!fs.existsSync(PROJECTS_DIR)) return [];
+  return fs
+    .readdirSync(PROJECTS_DIR)
+    .filter((f) => f.endsWith('.md'))
+    .map((f) => f.slice(0, -3))
+    .sort();
+}
+
+export function projectExists(name) {
+  return fs.existsSync(tasksFile(name));
+}
+
+// existing projects (open-task counts) matching what's typed so far;
+// "inbox" is always offered as a destination
+export function projectSuggestions(partial = '') {
+  const p = partial.toLowerCase().replace(/^#/, '');
+  const all = [
+    { name: 'inbox', count: loadTasks(null).filter((t) => !t.done).length },
+    ...listProjects().map((name) => ({
+      name,
+      count: loadTasks(name).filter((t) => !t.done).length,
+    })),
+  ];
+  return all.filter((s) => s.name.toLowerCase().startsWith(p));
+}
+
+// every task across the inbox and all projects (for the calendar)
+export function loadAllTasks() {
+  const all = [...loadTasks(null)];
+  for (const name of listProjects()) all.push(...loadTasks(name));
+  return all;
 }
 
 export function loadArchive() {
@@ -158,15 +237,23 @@ export function autoFormatDates(text) {
   return `${text.slice(0, m.index)}📅 ${resolved} `;
 }
 
+// Matches a just-completed "📅 date " at the end of the input, plus whatever
+// priority word is being typed after it — drives the priority picker.
+export const PRIO_CTX = /📅 (\d{4}-\d{2}-\d{2}) ([a-z]*)$/iu;
+
 export function parseInput(raw) {
   let title = raw.trim().replace(/^- \[[ x]\]\s*/, '');
   let date = null;
+
+  const prio = extractPriority(title);
+  const priority = prio.priority;
+  title = prio.text.trim();
 
   const emoji = title.match(/📅\s?(\d{4}-\d{2}-\d{2})/u);
   if (emoji) {
     date = emoji[1];
     title = (title.slice(0, emoji.index) + title.slice(emoji.index + emoji[0].length)).trim();
-    return { done: false, title: title.replace(/\s{2,}/g, ' ').trim(), date, doneDate: null };
+    return { done: false, title: title.replace(/\s{2,}/g, ' ').trim(), date, doneDate: null, priority };
   }
 
   const at = title.match(new RegExp(`@(${DATE_WORD})\\b`, 'i'));
@@ -182,5 +269,5 @@ export function parseInput(raw) {
     }
   }
 
-  return { done: false, title: title.replace(/\s{2,}/g, ' ').trim(), date, doneDate: null };
+  return { done: false, title: title.replace(/\s{2,}/g, ' ').trim(), date, doneDate: null, priority };
 }

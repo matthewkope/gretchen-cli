@@ -21,11 +21,17 @@ Inside the app:
   ctrl+space            archive the selected task
   ctrl+d                delete the selected task
 
+After entering a date, a priority picker appears — Obsidian Tasks emojis
+(🔺 highest, ⏫ high, 🔼 medium, 🔽 low, ⏬ lowest); enter on "none" skips.
+
 Slash commands (type / to see the menu, tab completes):
-  /cal                  open the calendar
-  /archive              view archived tasks
+  /cal                  open the calendar (dates from all projects)
+  /project <name>       open a project, creating it if new (/projects lists)
+  /inbox                back to the inbox task list
+  /move <name>          move the selected task into a project (or inbox)
+  /archive              archive all completed tasks (/clear also works)
+  /archived             view archived tasks
   /tag <name>           filter by #tag (/tag lists tags, /all clears)
-  /clear                archive all completed tasks
   /sort                 sort tasks by due date
   /stats                task counts at a glance
   /help                 in-app help
