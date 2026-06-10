@@ -1,0 +1,25 @@
+{
+  "name": "gretchen",
+  "version": "0.1.0",
+  "description": "A Claude Code-style terminal project management app with markdown tasks, a calendar, and an archive.",
+  "type": "module",
+  "bin": {
+    "gretchen": "bin/gretchen.js",
+    "gre": "bin/gretchen.js"
+  },
+  "scripts": {
+    "build": "esbuild src/cli.jsx --bundle --packages=external --format=esm --platform=node --jsx=automatic --outfile=dist/cli.js",
+    "dev": "npm run build && node bin/gretchen.js",
+    "prepare": "npm run build"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "ink": "^5.2.0",
+    "react": "^18.3.1"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0"
+  }
+}
