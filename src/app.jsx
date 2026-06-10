@@ -4,7 +4,7 @@ import {
   loadTasks, saveTasks, loadArchive, saveArchive, archiveTask, parseInput, formatTask,
   getTags, today, dateSuggestions, tagSuggestions, autoFormatDates, DATE_CTX,
   loadAllTasks, listProjects, projectSuggestions, projectExists, slugifyProject, archiveSections, compareTasks,
-  taskBlocks, sortTasks,
+  taskBlocks, sortTasks, SORT_KEYS, sortSuggestions,
   prioritySuggestions, priorityEmoji, PRIO_CTX,
 } from './store.js';
 import { Calendar } from './calendar.jsx';
@@ -22,16 +22,15 @@ const COMMANDS = [
   { name: 'file', desc: 'file tasks into projects matching their #tags' },
   { name: 'tag', desc: 'filter by #tag — /tag name, /tag to list' },
   { name: 'all', desc: 'clear the tag filter' },
-  { name: 'sort', desc: 'sort tasks by due date' },
+  { name: 'sort', desc: 'sort tasks — /sort priority · due · tag · description · status' },
   { name: 'stats', desc: 'task counts at a glance' },
-  { name: 'refresh', desc: 'reload tasks from disk' },
   { name: 'toggl', desc: 'connect Toggl time tracking — opens the token page, /toggl off' },
   { name: 'commands', desc: 'list all commands and what they do' },
   { name: 'exit', desc: 'quit gretchen' },
 ];
 
 const ALIASES = {
-  quit: 'exit', q: 'exit', calendar: 'cal', sortby: 'sort', tags: 'tag', reload: 'refresh',
+  quit: 'exit', q: 'exit', calendar: 'cal', sortby: 'sort', tags: 'tag',
   cmds: 'commands', clear: 'archive', projects: 'project', proj: 'project', mv: 'move', home: 'inbox',
   sweep: 'file',
 };
@@ -142,13 +141,42 @@ function TaskLine({ task, selected, tracked, elapsed, toggl }) {
   );
 }
 
+// list title + every project, for jumping around with /project
+function NavBar({ project, openCount }) {
+  const items = ['inbox', ...listProjects()];
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      <Text>
+        <Text bold color={ACCENT}>{project ? `Project: ${project}` : 'Inbox'}</Text>
+        <Text dimColor> — {openCount} open task{openCount === 1 ? '' : 's'}</Text>
+      </Text>
+      {items.length > 1 && (
+        <Text>
+          {items.map((n, i) => {
+            const active = (n === 'inbox' ? null : n) === (project ?? null);
+            return (
+              <Text key={n}>
+                {i > 0 && <Text dimColor> · </Text>}
+                <Text color={active ? ACCENT : undefined} bold={active} dimColor={!active}>
+                  {active ? `[${n}]` : n}
+                </Text>
+              </Text>
+            );
+          })}
+          <Text dimColor>  — ctrl+p next · ctrl+0 prev · /project {'<name>'} jumps</Text>
+        </Text>
+      )}
+    </Box>
+  );
+}
+
 function HelpBar({ view, toggl }) {
   if (view === 'home')
     return (
       <Text dimColor>
         enter add task ("buy milk #home due friday") · ↑/↓ select · shift+↑/↓ reorder ·
         tab/shift+tab nest sub-task · enter (empty) toggle done ·{' '}
-        {toggl ? 'ctrl+t toggl ▶/⏹ · ' : ''}ctrl+space archive · ctrl+d delete · / commands
+        {toggl ? 'ctrl+t toggl ▶/⏹ · ' : ''}ctrl+e edit · ctrl+space archive · ctrl+d delete · / commands
       </Text>
     );
   if (view === 'archive') return <Text dimColor>ctrl+u unarchive · ↑/↓ select · esc home</Text>;
@@ -175,6 +203,8 @@ export function App({ initialView = 'home' }) {
   const [toggl, setToggl] = useState(() => !!togglToken()); // opt-in via /toggl, sticky across restarts
   const [tokenPrompt, setTokenPrompt] = useState(false); // /toggl setup: paste-the-token prompt
   const [tokenInput, setTokenInput] = useState('');
+  const [filePrompt, setFilePrompt] = useState(null); // { name, count } — offer to pull tagged inbox tasks into a new project
+  const [editing, setEditing] = useState(null); // task loaded into the input via ctrl+e
   const [tracking, setTracking] = useState(null); // { id, title, startedAt } — running Toggl entry
   const [, setTick] = useState(0);
 
@@ -204,6 +234,8 @@ export function App({ initialView = 'home' }) {
   const projArgCtx =
     view === 'home' && /^\/(projects?|proj|move|mv)\s+/i.test(input) ? input.match(/[\w-]*$/) : null;
   const projMenu = projArgCtx ? projectSuggestions(projArgCtx[0]) : [];
+  const sortArgCtx = view === 'home' && /^\/sort(by)?\s+/i.test(input) ? input.match(/[\w]*$/) : null;
+  const sortMenu = sortArgCtx ? sortSuggestions(sortArgCtx[0]) : [];
   // right after a 📅 date is completed, offer a priority
   const prioCtx = view === 'home' && !input.startsWith('/') && !hashCtx ? input.match(PRIO_CTX) : null;
   const prioMenu = prioCtx ? prioritySuggestions(prioCtx[2]) : [];
@@ -212,6 +244,8 @@ export function App({ initialView = 'home' }) {
       ? tagMenu.length
       : projArgCtx && projMenu.length > 0
       ? projMenu.length
+      : sortArgCtx && sortMenu.length > 0
+      ? sortMenu.length
       : cmdMenu.length
     : hashCtx
     ? tagMenu.length
@@ -241,6 +275,11 @@ export function App({ initialView = 'home' }) {
     editInput((v) => `${v.slice(0, projArgCtx.index)}${s.name}`);
   };
 
+  const insertSort = (s) => {
+    if (!sortArgCtx || !s) return;
+    editInput((v) => `${v.slice(0, sortArgCtx.index)}${s.key}`);
+  };
+
   const insertPriority = (s) => {
     if (!prioCtx || !s) return;
     editInput((v) => `${v.slice(0, prioCtx.index)}📅 ${prioCtx[1]} ${s.emoji ? `${s.emoji} ` : ''}`);
@@ -253,6 +292,23 @@ export function App({ initialView = 'home' }) {
     let j = i + 1;
     while (j < tasks.length && (tasks[j].indent || 0) > (task.indent || 0)) j++;
     return tasks.slice(i, j);
+  };
+
+  // split a list into tasks (with their sub-blocks) whose #tag matches a
+  // project name, and the rest
+  const splitByTag = (list, name) => {
+    const moved = [];
+    const stay = [];
+    for (let i = 0; i < list.length; ) {
+      const t = list[i];
+      let j = i + 1;
+      while (j < list.length && (list[j].indent || 0) > (t.indent || 0)) j++;
+      const block = list.slice(i, j);
+      const hit = getTags(t).some((g) => slugifyProject(g.slice(1)) === name);
+      (hit ? moved : stay).push(...block);
+      i = j;
+    }
+    return { moved, stay };
   };
 
   // switch the task list to a project file (null = inbox), creating it if new
@@ -329,7 +385,29 @@ export function App({ initialView = 'home' }) {
       if (ch && !key.ctrl && !key.meta) setTokenInput((v) => (v + ch).replace(/\s+/g, ''));
       return;
     }
+    // new-project prompt: pull the matching tagged inbox tasks in?
+    if (filePrompt) {
+      if (ch === 'y' || ch === 'Y' || key.return) {
+        const { moved, stay } = splitByTag(loadTasks(null), filePrompt.name);
+        saveTasks(stay, null);
+        const next = sortTasks([...loadTasks(filePrompt.name), ...moved]);
+        saveTasks(next, filePrompt.name);
+        if (project === filePrompt.name) setTasks(next);
+        setFilePrompt(null);
+        return note(`Filed ${moved.length} inbox task${moved.length === 1 ? '' : 's'} tagged #${filePrompt.name} into this project.`);
+      }
+      if (ch === 'n' || ch === 'N' || key.escape) {
+        setFilePrompt(null);
+        return note('Left them in the inbox — /file sweeps them over later.');
+      }
+      return;
+    }
     if (key.escape) {
+      if (editing) {
+        setEditing(null);
+        editInput(() => '');
+        return note('Edit cancelled.');
+      }
       if (panel) setPanel(null);
       return;
     }
@@ -384,6 +462,18 @@ export function App({ initialView = 'home' }) {
       return;
     }
 
+    // edit the selected task: its text loads into the input box for reworking
+    if (key.ctrl && ch === 'e' && !input) {
+      const task = visible[sel];
+      if (!task) return;
+      let text = task.title;
+      if (task.priority) text += ` ${priorityEmoji(task.priority)}`;
+      if (task.date) text += ` 📅 ${task.date}`;
+      setEditing(task);
+      editInput(() => text);
+      return note('Editing — enter saves · esc cancels');
+    }
+
     if (key.ctrl && ch === 'd') {
       const task = visible[sel];
       if (task) {
@@ -393,6 +483,16 @@ export function App({ initialView = 'home' }) {
         note(`Deleted: ${task.title}${block.length > 1 ? ` (+${block.length - 1} sub-task${block.length > 2 ? 's' : ''})` : ''}`);
       }
       return;
+    }
+
+    // cycle through the lists in the nav bar: ctrl+p forward, ctrl+0 back
+    // (ctrl+o too — many terminals can't transmit ctrl+digit)
+    if (key.ctrl && (ch === 'p' || ch === '0' || ch === 'o')) {
+      const items = [null, ...listProjects()];
+      const dir = ch === 'p' ? 1 : -1;
+      const next = items[(items.indexOf(project) + dir + items.length) % items.length];
+      openProject(next);
+      return note(next ? `Project: ${next}` : 'Inbox.');
     }
 
     // Toggl: start/stop tracking the selected task. The current project workspace
@@ -435,6 +535,18 @@ export function App({ initialView = 'home' }) {
       // through so plain enter still submits the task
       if (prioCtx && prioMenu.length > 0 && prioMenu[msel]?.emoji) return insertPriority(prioMenu[msel]);
       const text = input.trim();
+      if (editing) {
+        // saving an edit: rewrite the task in place, keeping done state,
+        // nesting, and sub-tasks; clearing the text cancels
+        const target = editing;
+        setEditing(null);
+        editInput(() => '');
+        const updated = text ? parseInput(text) : null;
+        if (!updated?.title) return note('Edit cancelled.');
+        const merged = { ...target, title: updated.title, date: updated.date, priority: updated.priority };
+        persist(tasks.map((t) => (t === target ? merged : t)));
+        return note(`Updated: ${formatTask(merged).trim()}`);
+      }
       if (!text) {
         // toggle done on selected task
         const task = visible[sel];
@@ -485,6 +597,14 @@ export function App({ initialView = 'home' }) {
           const name = slugifyProject(arg);
           if (!name) return note('Invalid project name.');
           const created = openProject(name);
+          if (created) {
+            // offer to pull matching tagged tasks out of the inbox
+            const { moved } = splitByTag(loadTasks(null), name);
+            if (moved.length) {
+              setFilePrompt({ name, count: moved.length });
+              return;
+            }
+          }
           return note(created ? `Created project ${name}.` : `Opened project ${name}.`);
         }
         if (cmd === 'inbox') {
@@ -555,9 +675,15 @@ export function App({ initialView = 'home' }) {
           return note('Tag filter cleared.');
         }
         if (cmd === 'sort') {
-          persist(sortTasks(tasks));
+          // bare /sort opens the picker; /sort <key> (or the highlighted option) sorts
+          const arg = (sortArgCtx && sortMenu[msel]?.key) || text.split(/\s+/)[1];
+          if (!arg) return editInput(() => '/sort ');
+          const k = SORT_KEYS.find((s) => s.key.startsWith(arg.toLowerCase()));
+          if (!k)
+            return note(`Unknown sort: ${arg} — options: ${SORT_KEYS.map((s) => s.key).join(', ')}.`);
+          persist(sortTasks(tasks, k.key));
           setSel(0);
-          return note('Sorted by priority, then due date — sub-tasks stay with their parent.');
+          return note(`Sorted by ${k.key} (${k.desc}) — sub-tasks stay with their parent.`);
         }
         if (cmd === 'toggl') {
           const arg = text.split(/\s+/)[1];
@@ -587,13 +713,6 @@ export function App({ initialView = 'home' }) {
             })
             .catch((e) => note(`Toggl: token rejected (${e.message}). Check track.toggl.com/profile.`));
           return;
-        }
-        if (cmd === 'refresh') {
-          const nextTasks = loadTasks(project);
-          setTasks(nextTasks);
-          setArchive(loadArchive());
-          setSel((s) => Math.max(0, Math.min(s, nextTasks.length - 1)));
-          return note('Refreshed from disk.');
         }
         if (cmd === 'stats') {
           const open = tasks.filter((t) => !t.done);
@@ -644,6 +763,7 @@ export function App({ initialView = 'home' }) {
       }
       if (tagMenu.length > 0) return insertTag(tagMenu[msel]);
       if (projArgCtx && projMenu.length > 0) return insertProject(projMenu[msel]);
+      if (sortArgCtx && sortMenu.length > 0) return insertSort(sortMenu[msel]);
       if (prioCtx && prioMenu.length > 0) return insertPriority(prioMenu[msel]);
       if (dateMenu.length > 0) return insertDate(dateMenu[msel]);
       if (cmdMenu.length > 0) editInput(() => `/${cmdMenu[msel].name}`);
@@ -686,7 +806,18 @@ export function App({ initialView = 'home' }) {
       )}
 
       {view === 'home' && (
-        <Box flexDirection="column" marginTop={1}>
+        <Box flexDirection="column">
+          <NavBar project={project} openCount={visible.filter((t) => !t.done).length} />
+          {filePrompt && (
+            <Box flexDirection="column" borderStyle="round" borderColor="magenta" paddingX={1} marginTop={1}>
+              <Text>
+                <Text bold color="magenta">New project {filePrompt.name} — </Text>
+                file {filePrompt.count} inbox task{filePrompt.count === 1 ? '' : 's'} tagged{' '}
+                <Text color="yellow">#{filePrompt.name}</Text> into it?
+              </Text>
+              <Text dimColor>y/enter yes · n/esc keep them in the inbox</Text>
+            </Box>
+          )}
           {visible.length === 0 && (
             <Text dimColor>
               {tagFilter ? `No tasks tagged ${tagFilter}. /all clears the filter.` : 'No tasks yet. Type one below and press enter.'}
@@ -720,12 +851,12 @@ export function App({ initialView = 'home' }) {
             </Box>
           ) : (
             <Box borderStyle="round" borderColor={ACCENT} paddingX={1} marginTop={1}>
-              <Text color={ACCENT}>{'> '}</Text>
+              <Text color={editing ? 'yellow' : ACCENT}>{editing ? '✍️ ' : '> '}</Text>
               <Text wrap="truncate-start">{input}</Text>
               <Text color={ACCENT}>▌</Text>
             </Box>
           )}
-          {input.startsWith('/') && !(tagArgCtx && tagMenu.length > 0) && !(projArgCtx && projMenu.length > 0) && (
+          {input.startsWith('/') && !(tagArgCtx && tagMenu.length > 0) && !(projArgCtx && projMenu.length > 0) && !(sortArgCtx && sortMenu.length > 0) && (
             <Box flexDirection="column" paddingX={2}>
               {cmdMenu.map((c, i) => (
                 <Text key={c.name}>
@@ -782,6 +913,20 @@ export function App({ initialView = 'home' }) {
                 </Text>
               ))}
               <Text dimColor>↑/↓ select · tab completes · enter runs · a new name creates the project</Text>
+            </Box>
+          )}
+          {sortArgCtx && sortMenu.length > 0 && (
+            <Box flexDirection="column" paddingX={2}>
+              <Text dimColor>sort by…</Text>
+              {sortMenu.map((s, i) => (
+                <Text key={s.key}>
+                  <Text color={i === msel ? ACCENT : undefined} bold={i === msel}>
+                    {i === msel ? '❯ ' : '  '}{s.key.padEnd(13)}
+                  </Text>
+                  <Text dimColor>{s.desc}</Text>
+                </Text>
+              ))}
+              <Text dimColor>↑/↓ select · tab completes · enter sorts</Text>
             </Box>
           )}
           {prioCtx && prioMenu.length > 0 && (

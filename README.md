@@ -1,7 +1,10 @@
 # ✻ Gretchen
 
-A terminal project management app styled after the Claude Code CLI. Tasks are plain
-markdown, dates become a calendar, and finished work lands in a browsable archive.
+A terminal project management app styled after the Claude Code CLI. Tasks are
+plain markdown in the [Obsidian Tasks](https://publish.obsidian.md/tasks/)
+format, dates become a calendar, finished work lands in a weekly-grouped
+archive, and everything is driven from one prompt with slash commands and
+pop-up pickers.
 
 ## Install
 
@@ -23,9 +26,8 @@ gre help        # cheatsheet
 
 ## Adding tasks
 
-Type into the prompt and press **enter** — Gretchen formats the markdown for you,
-using the [Obsidian Tasks](https://publish.obsidian.md/tasks/) emoji format
-(`📅` due date, `✅` done date), so your files work in Obsidian too:
+Type into the prompt and press **enter**. Gretchen formats the markdown for
+you, using the Obsidian Tasks emoji format, so your files work in Obsidian too:
 
 | You type                    | Stored as                               |
 | --------------------------- | --------------------------------------- |
@@ -35,23 +37,24 @@ using the [Obsidian Tasks](https://publish.obsidian.md/tasks/) emoji format
 | `pay rent @today`           | `- [ ] pay rent 📅 2026-06-09`          |
 | `buy milk #home due monday` | `- [ ] buy milk #home 📅 2026-06-15`    |
 
-Dates can be written as `@today`, `@tomorrow`, `@friday`, `@2026-07-01`, the same
-words after `due`, or a bare trailing date word. `#tags` stay in the description
-and can be used to filter the list. Archived tasks get a `✅` completion date.
+Dates can be written as `@today`, `@tomorrow`, `@friday`, `@2026-07-01`, the
+same words after `due`, or a bare trailing date word. They convert to
+`📅 YYYY-MM-DD` live, the moment you finish the word. Completed tasks get a
+`✅` done date. The list re-sorts on every add (priority, then due date).
 
-Dates format as you type: the moment you finish a date word (`due friday` +
-space), it's replaced inline with `📅 2026-06-12`. And typing `@` or `due `
-opens a date picker under the prompt — upcoming days, next week, in 2 weeks —
-navigate with `↑/↓`, insert with tab or enter.
+## Pickers
 
-Tags get the same treatment: typing `#` lists your existing tags with task
-counts, filtered as you keep typing — `↑/↓` to select, tab or enter to insert.
-`/tag ` shows the same picker for choosing a filter.
+Everything pops up under the prompt as you type — **↑/↓** selects, **tab or
+enter** inserts:
 
-After a date is set, a priority picker appears, using the Obsidian Tasks
-emojis — 🔺 highest, ⏫ high, 🔼 medium, 🔽 low, ⏬ lowest. Enter on "none"
-(the default) just submits the task; the emoji is stored between the
-description and the due date, e.g. `- [ ] fix bug ⏫ 📅 2026-06-12`.
+- **`/`** — the command menu, filtered as you type
+- **`@` or `due `** — a date picker: today, tomorrow, the rest of the week,
+  next week, in 2 weeks
+- **after a date lands** — a priority picker: 🔺 highest, ⏫ high, 🔼 medium,
+  🔽 low, ⏬ lowest (enter on *none*, the default, just submits)
+- **`#`** — your existing tags with task counts (`/tag ` too)
+- **`/project `, `/move `** — projects with open-task counts
+- **`/sort `** — the five sort keys
 
 ## Sub-tasks
 
@@ -63,57 +66,84 @@ Tasks nest, Obsidian-style — indented checklist lines under a parent:
     - [ ] book venue
 ```
 
-Select a task and press **tab** (with an empty prompt) to nest it under the
-task above; **shift+tab** un-nests. Sub-tasks ride along with their parent:
-archiving, deleting, moving to a project, reordering, and sorting all treat
-a parent and its sub-tasks as one block. Each line is still its own task
-(own date, priority, done state), exactly as Obsidian Tasks treats them.
+With an empty prompt, **tab** nests the selected task under the one above;
+press tab again to un-nest (**shift+tab** steps out one level directly).
+A parent and its sub-tasks travel as one block: archiving, deleting, moving,
+filing, reordering, and sorting all keep them together. Each line is still
+its own task with its own date, priority, and done state.
 
 ## Projects
 
-Sort tasks into projects, each its own markdown file under
-`~/.gretchen/projects/`:
+Each project is its own markdown file under `~/.gretchen/projects/`. The nav
+bar above the task list shows the inbox and every project; the calendar
+aggregates due dates from all of them.
 
-- `/project <name>` opens a project, creating it if it doesn't exist
-- `/project` lists projects; typing `/project ` opens a picker with counts
-- `/move <name>` moves the selected task into a project (`/move inbox` back)
-- `/inbox` returns to the main list; the calendar shows dates from everywhere
+- `/project <name>` opens a project, creating it if new (`/project` lists)
+- `/inbox` returns to the main list
+- `/move <name>` moves the selected task there (`/move inbox` brings it back)
+- `/file` sweeps the list: every task whose `#tag` matches an existing
+  project is filed into it
+- **ctrl+p / ctrl+0** cycle forward/back through inbox and projects
+
+## Toggl time tracking (optional)
+
+`/toggl` opens your Toggl profile page; paste the API token into the prompt
+and you're connected. **ctrl+t** then starts/stops tracking the selected task
+with a live ⏺ elapsed timer — entries are named after the task text and filed
+under the Toggl project matching the current Gretchen project (or first
+`#tag`). `/toggl off` disconnects.
+
+## Slash commands
+
+| Command            | Action                                              |
+| ------------------ | --------------------------------------------------- |
+| `/cal`             | calendar — month/week/day views (`m`/`w`/`d`, tab)  |
+| `/project <name>`  | open or create a project (`/proj`, `/projects`)     |
+| `/inbox`           | back to the inbox (`/home`)                         |
+| `/move <name>`     | move selected task to a project (`/mv`)             |
+| `/file`            | file tagged tasks into matching projects (`/sweep`) |
+| `/tag <name>`      | filter by #tag — `/tag` lists, `/all` clears        |
+| `/sort <key>`      | priority · due · tag · description · status         |
+| `/archive`         | archive all completed tasks (`/clear`)              |
+| `/archived`        | view the archive (`ctrl+u` unarchives)              |
+| `/stats`           | open / done / archived / due / overdue / projects   |
+| `/toggl`           | connect or disconnect Toggl (`/toggl off`)          |
+| `/commands`        | full command list with aliases (`/cmds`)            |
+| `/exit`            | quit (`/quit`, `/q`, or ctrl+c)                     |
 
 ## Keys
 
-| Key                | Action                                  |
-| ------------------ | --------------------------------------- |
-| `↑` / `↓`          | select a task                           |
-| `shift+↑` / `shift+↓` | reorder the selected task            |
-| `enter` (empty)    | toggle done on the selected task        |
-| `ctrl+space`       | archive the selected task               |
-| `ctrl+d`           | delete the selected task                |
-## Slash commands
+| Key                   | Action                                       |
+| --------------------- | -------------------------------------------- |
+| `↑` / `↓`             | select a task (or steer an open picker)      |
+| `shift+↑` / `shift+↓` | reorder — blocks move with their sub-tasks   |
+| `tab` / `shift+tab`   | nest / un-nest the selected task             |
+| `enter` (empty)       | toggle done on the selected task             |
+| `ctrl+e`              | edit the selected task in the prompt         |
+| `ctrl+space`          | archive the selected task (+ sub-tasks)      |
+| `ctrl+d`              | delete the selected task (+ sub-tasks)       |
+| `ctrl+t`              | start/stop Toggl tracking                    |
+| `ctrl+p` / `ctrl+0`   | next / previous project                      |
+| `esc`                 | back home / close panel / cancel edit        |
 
-Type `/` in the prompt to open the command menu (tab completes, enter runs):
+> **Note on Cmd shortcuts:** macOS terminals never forward the ⌘ key to apps
+> (and ⌃⌘Space is the system emoji picker), so archive is `ctrl+space` and
+> reorder is `shift+↑/↓` — the closest terminal-legal equivalents.
 
-| Command            | Action                                  |
-| ------------------ | --------------------------------------- |
-| `/cal`             | calendar view                           |
-| `/archive`         | archive view (`ctrl+u` to unarchive)    |
-| `/tag <name>`      | filter by #tag (`/tag` lists all tags)  |
-| `/all`             | clear the tag filter                    |
-| `/clear`           | archive all completed tasks             |
-| `/sort`            | sort tasks by due date (undated last)   |
-| `/stats`           | open / done / archived / overdue counts |
-| `/help`            | in-app help                             |
-| `/exit` (`/quit`)  | exit (or `ctrl+c`)                      |
+## Calendar
 
-> **Note on Cmd shortcuts:** macOS terminals never forward the ⌘ key to apps (and
-> ⌃⌘Space is the system emoji picker), so the originally requested ⌃⌘Space and
-> ⌘⇧↑/↓ are mapped to `ctrl+space` and `shift+↑/↓`.
+`gre cal` or `/cal`. Month, week, and day views (`m`/`w`/`d` or tab cycles,
+enter zooms in). Arrows move by day/week, `shift+←/→` jumps a period, `t`
+returns to today. Days with due tasks show them inline; today is highlighted.
 
 ## Storage
 
-Everything is plain markdown you can edit by hand:
+Everything is plain markdown you can edit by hand (or open in Obsidian):
 
-- `~/.gretchen/tasks.md` — active tasks
-- `~/.gretchen/archive.md` — archived tasks
+- `~/.gretchen/tasks.md` — the inbox
+- `~/.gretchen/projects/<name>.md` — one file per project
+- `~/.gretchen/archive.md` — archived tasks, grouped by year/month/week
+- `~/.gretchen/toggl-token` — Toggl API token, if connected
 
 ## Development
 

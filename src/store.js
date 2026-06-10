@@ -32,6 +32,13 @@ export function prioritySuggestions(partial = '') {
   return [{ key: 'none', emoji: '' }, ...PRIORITIES].filter((s) => s.key.startsWith(p));
 }
 
+function byDue(a, b) {
+  if (!a.date && !b.date) return 0;
+  if (!a.date) return 1;
+  if (!b.date) return -1;
+  return a.date < b.date ? -1 : a.date > b.date ? 1 : 0;
+}
+
 // priority first (no emoji = Obsidian's "normal", between medium and low),
 // then due date ascending with undated tasks last
 export function compareTasks(a, b) {
@@ -39,12 +46,36 @@ export function compareTasks(a, b) {
     const i = PRIORITIES.findIndex((p) => p.key === t.priority);
     return i < 0 ? 2.5 : i; // none → between medium (2) and low (3)
   };
-  if (rank(a) !== rank(b)) return rank(a) - rank(b);
-  if (!a.date && !b.date) return 0;
-  if (!a.date) return 1;
-  if (!b.date) return -1;
-  return a.date < b.date ? -1 : a.date > b.date ? 1 : 0;
+  return rank(a) - rank(b) || byDue(a, b);
 }
+
+// Obsidian Tasks-style sort keys ("sort by priority/due/tag/description/status")
+export const SORT_KEYS = [
+  { key: 'priority', desc: 'priority 🔺→⏬, then due date' },
+  { key: 'due', desc: 'earliest due date first, undated last' },
+  { key: 'tag', desc: 'first #tag A→Z, untagged last' },
+  { key: 'description', desc: 'task text A→Z' },
+  { key: 'status', desc: 'open tasks first, then done' },
+];
+
+export function sortSuggestions(partial = '') {
+  const p = partial.toLowerCase();
+  return SORT_KEYS.filter((s) => s.key.startsWith(p));
+}
+
+const COMPARATORS = {
+  priority: compareTasks,
+  due: (a, b) => byDue(a, b) || compareTasks(a, b),
+  tag: (a, b) => {
+    const ta = getTags(a)[0]?.toLowerCase();
+    const tb = getTags(b)[0]?.toLowerCase();
+    if (ta !== tb) return !ta ? 1 : !tb ? -1 : ta < tb ? -1 : 1;
+    return compareTasks(a, b);
+  },
+  description: (a, b) =>
+    a.title.localeCompare(b.title, undefined, { sensitivity: 'base' }) || compareTasks(a, b),
+  status: (a, b) => (a.done === b.done ? compareTasks(a, b) : a.done ? 1 : -1),
+};
 
 function extractPriority(text) {
   for (const p of PRIORITIES) {
@@ -99,10 +130,11 @@ export function taskBlocks(tasks) {
   return blocks;
 }
 
-// Block-aware sort: parents are ordered by compareTasks, sub-tasks stay attached.
-export function sortTasks(tasks) {
+// Block-aware sort: parents are ordered by the chosen key, sub-tasks stay attached.
+export function sortTasks(tasks, key = 'priority') {
+  const cmp = COMPARATORS[key] || compareTasks;
   return taskBlocks(tasks)
-    .sort((a, b) => compareTasks(a[0], b[0]))
+    .sort((a, b) => cmp(a[0], b[0]))
     .flat();
 }
 

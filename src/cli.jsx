@@ -19,8 +19,11 @@ Inside the app:
   up/down               select a task
   shift+up/down         reorder the selected task
   tab / shift+tab       nest the selected task under the one above / un-nest
+  ctrl+e                edit the selected task in the prompt
   ctrl+space            archive the selected task (sub-tasks go along)
   ctrl+d                delete the selected task (sub-tasks go along)
+  ctrl+p / ctrl+0       cycle to the next / previous project
+  ctrl+t                start/stop Toggl tracking (after /toggl setup)
 
 After entering a date, a priority picker appears — Obsidian Tasks emojis
 (🔺 highest, ⏫ high, 🔼 medium, 🔽 low, ⏬ lowest); enter on "none" skips.
@@ -30,15 +33,20 @@ Slash commands (type / to see the menu, tab completes):
   /project <name>       open a project, creating it if new (/projects lists)
   /inbox                back to the inbox task list
   /move <name>          move the selected task into a project (or inbox)
+  /file                 file tagged tasks into matching projects (/sweep)
   /archive              archive all completed tasks (/clear also works)
-  /archived             view archived tasks
+  /archived             view archived tasks (grouped by week, ctrl+u unarchives)
   /tag <name>           filter by #tag (/tag lists tags, /all clears)
-  /sort                 sort tasks by due date
+  /sort <key>           priority · due · tag · description · status
   /stats                task counts at a glance
-  /help                 in-app help
+  /toggl                connect Toggl time tracking (/toggl off disconnects)
+  /commands             every command with its aliases
   /exit (or /quit)      quit gretchen
 
-Tasks are stored as plain markdown in ~/.gretchen/tasks.md`);
+Storage (plain markdown, Obsidian-compatible):
+  ~/.gretchen/tasks.md             the inbox
+  ~/.gretchen/projects/<name>.md   one file per project
+  ~/.gretchen/archive.md           archive, grouped by year/month/week`);
   process.exit(0);
 }
 
