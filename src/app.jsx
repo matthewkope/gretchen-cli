@@ -1,6 +1,9 @@
 import React, { useState } from 'react';
 import { Box, Text, useApp, useInput } from 'ink';
-import { loadTasks, saveTasks, loadArchive, saveArchive, archiveTask, parseInput, formatTask, getTags, today } from './store.js';
+import {
+  loadTasks, saveTasks, loadArchive, saveArchive, archiveTask, parseInput, formatTask,
+  getTags, today, dateSuggestions, autoFormatDates, DATE_CTX,
+} from './store.js';
 import { Calendar } from './calendar.jsx';
 
 const ACCENT = '#d77757'; // Claude Code's terracotta
@@ -13,11 +16,12 @@ const COMMANDS = [
   { name: 'clear', desc: 'archive all completed tasks' },
   { name: 'sort', desc: 'sort tasks by due date' },
   { name: 'stats', desc: 'task counts at a glance' },
+  { name: 'refresh', desc: 'reload tasks from disk' },
   { name: 'help', desc: 'how to use gretchen' },
   { name: 'exit', desc: 'quit gretchen' },
 ];
 
-const ALIASES = { quit: 'exit', q: 'exit', calendar: 'cal', sortby: 'sort', tags: 'tag' };
+const ALIASES = { quit: 'exit', q: 'exit', calendar: 'cal', sortby: 'sort', tags: 'tag', reload: 'refresh' };
 
 function matchCommands(input) {
   if (!input.startsWith('/')) return [];
@@ -88,7 +92,12 @@ function HelpBar({ view }) {
       </Text>
     );
   if (view === 'archive') return <Text dimColor>ctrl+u unarchive · ↑/↓ select · esc home</Text>;
-  return <Text dimColor>←/→ day · shift+←/→ month · t today · esc home</Text>;
+  return (
+    <Text dimColor>
+      m/w/d or tab switch view · enter zoom in · ←/→ day · ↑/↓ week · shift+←/→ prev/next
+      period · t today · esc home
+    </Text>
+  );
 }
 
 export function App({ initialView = 'home' }) {
@@ -100,10 +109,29 @@ export function App({ initialView = 'home' }) {
   const [input, setInput] = useState('');
   const [flash, setFlash] = useState(null);
   const [tagFilter, setTagFilter] = useState(null);
+  const [menuSel, setMenuSel] = useState(0);
 
   // the list shown on the home view; ops map back to real indices via identity
   const visible = tagFilter ? tasks.filter((t) => getTags(t).includes(tagFilter)) : tasks;
   const realIndex = (i) => tasks.indexOf(visible[i]);
+
+  // popup menus under the input box: slash commands, or date suggestions
+  // while typing "@..." / "due ..."
+  const cmdMenu = view === 'home' ? matchCommands(input) : [];
+  const dateCtx = view === 'home' && !input.startsWith('/') ? input.match(DATE_CTX) : null;
+  const dateMenu = dateCtx ? dateSuggestions(dateCtx[2]) : [];
+  const menuLen = input.startsWith('/') ? cmdMenu.length : dateMenu.length;
+  const msel = Math.min(menuSel, Math.max(0, menuLen - 1));
+
+  const editInput = (fn) => {
+    setInput(fn);
+    setMenuSel(0);
+  };
+
+  const insertDate = (s) => {
+    if (!dateCtx || !s) return;
+    editInput((v) => `${v.slice(0, dateCtx.index)}📅 ${s.date} `);
+  };
 
   const persist = (next) => {
     setTasks(next);
@@ -150,8 +178,15 @@ export function App({ initialView = 'home' }) {
       }
       return;
     }
-    if (key.upArrow) return setSel((s) => Math.max(0, s - 1));
-    if (key.downArrow) return setSel((s) => Math.min(visible.length - 1, s + 1));
+    if (key.upArrow || key.downArrow) {
+      // arrows steer an open popup menu; otherwise the task list
+      if (menuLen > 0) {
+        const dir = key.upArrow ? -1 : 1;
+        return setMenuSel((s) => (Math.min(s, menuLen - 1) + dir + menuLen) % menuLen);
+      }
+      if (key.upArrow) return setSel((s) => Math.max(0, s - 1));
+      return setSel((s) => Math.min(visible.length - 1, s + 1));
+    }
 
     // Ctrl+Space arrives as a NUL byte, which Ink reports as ctrl+` (Cmd+Ctrl+Space is reserved by macOS)
     if (key.ctrl && (ch === ' ' || ch === '`' || ch === '\u0000')) {
@@ -177,6 +212,9 @@ export function App({ initialView = 'home' }) {
     }
 
     if (key.return) {
+      // with the date picker open, enter inserts the highlighted date;
+      // the next enter submits the task
+      if (dateMenu.length > 0) return insertDate(dateMenu[msel]);
       const text = input.trim();
       if (!text) {
         // toggle done on selected task
@@ -190,9 +228,10 @@ export function App({ initialView = 'home' }) {
         }
         return;
       }
-      setInput('');
+      editInput(() => '');
       if (text.startsWith('/')) {
-        const cmd = resolveCommand(text);
+        // exact/unique-prefix match wins; otherwise run the highlighted menu entry
+        const cmd = resolveCommand(text) || cmdMenu[msel]?.name;
         if (cmd === 'exit') return exit();
         if (cmd === 'cal') return setView('calendar');
         if (cmd === 'archive') {
@@ -241,6 +280,13 @@ export function App({ initialView = 'home' }) {
           setSel(0);
           return note('Sorted by due date (undated tasks last).');
         }
+        if (cmd === 'refresh') {
+          const nextTasks = loadTasks();
+          setTasks(nextTasks);
+          setArchive(loadArchive());
+          setSel((s) => Math.max(0, Math.min(s, nextTasks.length - 1)));
+          return note('Refreshed from disk.');
+        }
         if (cmd === 'stats') {
           const open = tasks.filter((t) => !t.done);
           const dueToday = open.filter((t) => t.date === today()).length;
@@ -260,12 +306,13 @@ export function App({ initialView = 'home' }) {
     }
 
     if (key.tab) {
-      const matches = matchCommands(input);
-      if (matches.length > 0) setInput(`/${matches[0].name}`);
+      if (dateMenu.length > 0) return insertDate(dateMenu[msel]);
+      if (cmdMenu.length > 0) editInput(() => `/${cmdMenu[msel].name}`);
       return;
     }
-    if (key.backspace || key.delete) return setInput((v) => v.slice(0, -1));
-    if (ch && !key.ctrl && !key.meta && !key.escape && !key.tab) setInput((v) => v + ch);
+    if (key.backspace || key.delete) return editInput((v) => v.slice(0, -1));
+    if (ch && !key.ctrl && !key.meta && !key.escape && !key.tab)
+      editInput((v) => autoFormatDates(v + ch));
   });
 
   return (
@@ -301,16 +348,29 @@ export function App({ initialView = 'home' }) {
           </Box>
           {input.startsWith('/') && (
             <Box flexDirection="column" paddingX={2}>
-              {matchCommands(input).map((c, i) => (
+              {cmdMenu.map((c, i) => (
                 <Text key={c.name}>
-                  <Text color={i === 0 ? ACCENT : undefined} bold={i === 0}>
-                    /{c.name.padEnd(9)}
+                  <Text color={i === msel ? ACCENT : undefined} bold={i === msel}>
+                    {i === msel ? '❯ ' : '  '}/{c.name.padEnd(9)}
                   </Text>
                   <Text dimColor>{c.desc}</Text>
                 </Text>
               ))}
-              {matchCommands(input).length === 0 && <Text dimColor>no matching command</Text>}
-              <Text dimColor>tab to complete · enter to run</Text>
+              {cmdMenu.length === 0 && <Text dimColor>no matching command</Text>}
+              <Text dimColor>↑/↓ select · tab to complete · enter to run</Text>
+            </Box>
+          )}
+          {dateMenu.length > 0 && (
+            <Box flexDirection="column" paddingX={2}>
+              {dateMenu.map((s, i) => (
+                <Text key={s.label}>
+                  <Text color={i === msel ? ACCENT : undefined} bold={i === msel}>
+                    {i === msel ? '❯ ' : '  '}📅 {s.label.padEnd(12)}
+                  </Text>
+                  <Text dimColor>{s.date}</Text>
+                </Text>
+              ))}
+              <Text dimColor>↑/↓ select · tab or enter to insert</Text>
             </Box>
           )}
         </Box>

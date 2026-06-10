@@ -39,6 +39,11 @@ Dates can be written as `@today`, `@tomorrow`, `@friday`, `@2026-07-01`, the sam
 words after `due`, or a bare trailing date word. `#tags` stay in the description
 and can be used to filter the list. Archived tasks get a `✅` completion date.
 
+Dates format as you type: the moment you finish a date word (`due friday` +
+space), it's replaced inline with `📅 2026-06-12`. And typing `@` or `due `
+opens a date picker under the prompt — upcoming days, next week, in 2 weeks —
+navigate with `↑/↓`, insert with tab or enter.
+
 ## Keys
 
 | Key                | Action                                  |

@@ -97,7 +97,7 @@ export function today() {
 const WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
 const DATE_WORD = `\\d{4}-\\d{2}-\\d{2}|today|tomorrow|${WEEKDAYS.join('|')}`;
 
-function resolveDateWord(word) {
+export function resolveDateWord(word) {
   const w = word.toLowerCase();
   if (/^\d{4}-\d{2}-\d{2}$/.test(w)) return w;
   const d = new Date();
@@ -115,9 +115,48 @@ function resolveDateWord(word) {
 //   "@today", "@friday", "@2026-06-15"     — @ followed by a date word
 //   "due tomorrow", "due 2026-06-15"       — the word due followed by a date word
 //   "call mom tomorrow"                    — a bare trailing date word
+// Upcoming-date suggestions for the input menu, filtered by what's typed so far.
+export function dateSuggestions(partial = '') {
+  const p = partial.toLowerCase();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(p)) return [{ label: p, date: p }];
+  const now = new Date();
+  const add = (days) => iso(new Date(now.getFullYear(), now.getMonth(), now.getDate() + days));
+  const list = [
+    { label: 'today', date: add(0) },
+    { label: 'tomorrow', date: add(1) },
+  ];
+  for (let i = 2; i <= 6; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + i);
+    list.push({ label: WEEKDAYS[d.getDay()], date: iso(d) });
+  }
+  list.push({ label: 'next week', date: add(7) });
+  list.push({ label: 'in 2 weeks', date: add(14) });
+  return list.filter((s) => s.label.startsWith(p) || s.date.startsWith(p));
+}
+
+// Matches an unfinished "@..." or "due ..." date at the end of the input.
+export const DATE_CTX = /(@|\bdue:?\s+)([\w-]*)$/i;
+
+// Live replacement while typing: once a date word after @/due is closed off
+// with a space, swap the whole clause for the 📅 emoji form.
+export function autoFormatDates(text) {
+  const m = text.match(new RegExp(`(@|\\bdue:?\\s+)(${DATE_WORD})(\\s)$`, 'iu'));
+  if (!m) return text;
+  const resolved = resolveDateWord(m[2]);
+  if (!resolved) return text;
+  return `${text.slice(0, m.index)}📅 ${resolved} `;
+}
+
 export function parseInput(raw) {
   let title = raw.trim().replace(/^- \[[ x]\]\s*/, '');
   let date = null;
+
+  const emoji = title.match(/📅\s?(\d{4}-\d{2}-\d{2})/u);
+  if (emoji) {
+    date = emoji[1];
+    title = (title.slice(0, emoji.index) + title.slice(emoji.index + emoji[0].length)).trim();
+    return { done: false, title: title.replace(/\s{2,}/g, ' ').trim(), date, doneDate: null };
+  }
 
   const at = title.match(new RegExp(`@(${DATE_WORD})\\b`, 'i'));
   const due = at ? null : title.match(new RegExp(`\\bdue:?\\s+(${DATE_WORD})\\b`, 'i'));
