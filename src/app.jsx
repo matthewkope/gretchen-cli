@@ -2,21 +2,29 @@ import React, { useState } from 'react';
 import { Box, Text, useApp, useInput } from 'ink';
 import { loadTasks, saveTasks, loadArchive, saveArchive, archiveTask, parseInput, formatTask, today } from './store.js';
 import { Calendar } from './calendar.jsx';
+import { Mascot } from './mascot.jsx';
 
 const ACCENT = '#d77757'; // Claude Code's terracotta
 
 function Banner({ view }) {
   return (
-    <Box borderStyle="round" borderColor={ACCENT} paddingX={1} flexDirection="column">
-      <Text>
-        <Text color={ACCENT}>✻ Gretchen</Text>
-        <Text dimColor> v0.1.0 — terminal project management</Text>
-      </Text>
-      <Text dimColor>
-        {view === 'home' && '~/.gretchen/tasks.md'}
-        {view === 'archive' && '~/.gretchen/archive.md'}
-        {view === 'calendar' && 'calendar'}
-      </Text>
+    <Box borderStyle="round" borderColor={ACCENT} paddingX={1}>
+      {view === 'home' && (
+        <Box marginRight={2}>
+          <Mascot />
+        </Box>
+      )}
+      <Box flexDirection="column" justifyContent="center">
+        <Text>
+          <Text color={ACCENT}>✻ Gretchen</Text>
+          <Text dimColor> v0.1.0 — terminal project management</Text>
+        </Text>
+        <Text dimColor>
+          {view === 'home' && '~/.gretchen/tasks.md'}
+          {view === 'archive' && '~/.gretchen/archive.md'}
+          {view === 'calendar' && 'calendar'}
+        </Text>
+      </Box>
     </Box>
   );
 }
