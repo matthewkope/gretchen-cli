@@ -626,8 +626,9 @@ export function App({ initialView = 'home' }) {
     }
 
     if (key.tab) {
-      // shift+tab outdents the selected task; tab with an empty input indents
-      // it under the task above (sub-tasks, Obsidian-style nested checklists)
+      // tab with an empty input cycles the selected task's nesting: deeper
+      // under the task above until the max depth, then back to top level.
+      // shift+tab outdents one level directly.
       if (key.shift || (input === '' && visible[sel])) {
         if (tagFilter) return note('Clear the tag filter (/all) to change nesting.');
         const task = visible[sel];
@@ -635,7 +636,7 @@ export function App({ initialView = 'home' }) {
         const idx = tasks.indexOf(task);
         const cur = task.indent || 0;
         const max = idx > 0 ? (tasks[idx - 1].indent || 0) + 1 : 0;
-        const next = key.shift ? Math.max(0, cur - 1) : Math.min(cur + 1, max);
+        const next = key.shift ? Math.max(0, cur - 1) : cur >= max ? 0 : cur + 1;
         if (next === cur)
           return note(key.shift ? 'Already a top-level task.' : 'Nothing above to nest under.');
         persist(tasks.map((t) => (t === task ? { ...t, indent: next } : t)));
