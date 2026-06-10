@@ -6,20 +6,44 @@ const DIR = path.join(os.homedir(), '.gretchen');
 const TASKS_FILE = path.join(DIR, 'tasks.md');
 const ARCHIVE_FILE = path.join(DIR, 'archive.md');
 
-const TASK_RE = /^- \[( |x)\] (.*?)(?: @(\d{4}-\d{2}-\d{2}))?\s*$/;
+const TASK_RE = /^- \[( |x)\] (.*)$/;
+const TAG_RE = /#[\w][\w/-]*/g;
 
 function ensureDir() {
   fs.mkdirSync(DIR, { recursive: true });
 }
 
+// Obsidian Tasks emoji format: description first, then 📅 due and ✅ done at the end.
+// https://publish.obsidian.md/tasks/
 export function formatTask(task) {
-  return `- [${task.done ? 'x' : ' '}] ${task.title}${task.date ? ` @${task.date}` : ''}`;
+  let line = `- [${task.done ? 'x' : ' '}] ${task.title}`;
+  if (task.date) line += ` 📅 ${task.date}`;
+  if (task.doneDate) line += ` ✅ ${task.doneDate}`;
+  return line;
 }
 
 export function parseLine(line) {
   const m = line.match(TASK_RE);
   if (!m) return null;
-  return { done: m[1] === 'x', title: m[2], date: m[3] || null };
+  let rest = m[2];
+  let date = null;
+  let doneDate = null;
+  // 📅 is current format; @date is the pre-emoji format, migrated on next save
+  const due = rest.match(/(?:📅|@)\s?(\d{4}-\d{2}-\d{2})/u);
+  if (due) {
+    date = due[1];
+    rest = rest.replace(due[0], '');
+  }
+  const done = rest.match(/✅\s?(\d{4}-\d{2}-\d{2})/u);
+  if (done) {
+    doneDate = done[1];
+    rest = rest.replace(done[0], '');
+  }
+  return { done: m[1] === 'x', title: rest.replace(/\s{2,}/g, ' ').trim(), date, doneDate };
+}
+
+export function getTags(task) {
+  return [...new Set(task.title.match(TAG_RE) || [])];
 }
 
 function loadFile(file, header) {
@@ -58,45 +82,55 @@ export function saveArchive(tasks) {
 
 export function archiveTask(task) {
   const archive = loadArchive();
-  archive.unshift({ ...task, done: true, archivedAt: today() });
+  archive.unshift({ ...task, done: true, doneDate: task.doneDate || today() });
   saveFile(ARCHIVE_FILE, 'Gretchen Archive', archive);
 }
 
-export function today() {
-  const d = new Date();
+function iso(d) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
-const WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+export function today() {
+  return iso(new Date());
+}
 
-// Parse raw input into a formatted task. Understands:
-//   "ship the report @2026-06-12", "call mom tomorrow", "demo friday", "pay rent today"
+const WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+const DATE_WORD = `\\d{4}-\\d{2}-\\d{2}|today|tomorrow|${WEEKDAYS.join('|')}`;
+
+function resolveDateWord(word) {
+  const w = word.toLowerCase();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(w)) return w;
+  const d = new Date();
+  if (w === 'tomorrow') d.setDate(d.getDate() + 1);
+  else if (w !== 'today') {
+    const target = WEEKDAYS.indexOf(w);
+    if (target < 0) return null;
+    d.setDate(d.getDate() + ((target - d.getDay() + 7) % 7 || 7));
+  }
+  return iso(d);
+}
+
+// Parse raw input into a task. #tags stay in the description (Obsidian style).
+// Dates, in priority order:
+//   "@today", "@friday", "@2026-06-15"     — @ followed by a date word
+//   "due tomorrow", "due 2026-06-15"       — the word due followed by a date word
+//   "call mom tomorrow"                    — a bare trailing date word
 export function parseInput(raw) {
-  let title = raw.trim();
+  let title = raw.trim().replace(/^- \[[ x]\]\s*/, '');
   let date = null;
 
-  const explicit = title.match(/@(\d{4}-\d{2}-\d{2})/);
-  if (explicit) {
-    date = explicit[1];
-    title = title.replace(explicit[0], '').replace(/\s{2,}/g, ' ').trim();
-  } else {
-    const lower = title.toLowerCase();
-    const wordMatch = lower.match(/\b(today|tomorrow|sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b\s*$/);
-    if (wordMatch) {
-      const word = wordMatch[1];
-      const d = new Date();
-      if (word === 'tomorrow') d.setDate(d.getDate() + 1);
-      else if (word !== 'today') {
-        const target = WEEKDAYS.indexOf(word);
-        const delta = (target - d.getDay() + 7) % 7 || 7;
-        d.setDate(d.getDate() + delta);
-      }
-      date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-      title = title.slice(0, wordMatch.index).trim();
+  const at = title.match(new RegExp(`@(${DATE_WORD})\\b`, 'i'));
+  const due = at ? null : title.match(new RegExp(`\\bdue:?\\s+(${DATE_WORD})\\b`, 'i'));
+  const bare = at || due ? null : title.match(new RegExp(`\\b(today|tomorrow|${WEEKDAYS.join('|')})\\s*$`, 'i'));
+
+  const hit = at || due || bare;
+  if (hit) {
+    const resolved = resolveDateWord(hit[1]);
+    if (resolved) {
+      date = resolved;
+      title = (title.slice(0, hit.index) + title.slice(hit.index + hit[0].length)).trim();
     }
   }
 
-  // Strip any markdown checkbox the user typed themselves; we format it.
-  title = title.replace(/^- \[[ x]\]\s*/, '');
-  return { done: false, title, date };
+  return { done: false, title: title.replace(/\s{2,}/g, ' ').trim(), date, doneDate: null };
 }

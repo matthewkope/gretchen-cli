@@ -23,14 +23,21 @@ gre help        # cheatsheet
 
 ## Adding tasks
 
-Type into the prompt and press **enter** — Gretchen formats the markdown for you:
+Type into the prompt and press **enter** — Gretchen formats the markdown for you,
+using the [Obsidian Tasks](https://publish.obsidian.md/tasks/) emoji format
+(`📅` due date, `✅` done date), so your files work in Obsidian too:
 
-| You type                  | Stored as                          |
-| ------------------------- | ---------------------------------- |
-| `ship the report`         | `- [ ] ship the report`            |
-| `call mom tomorrow`       | `- [ ] call mom @2026-06-10`       |
-| `demo friday`             | `- [ ] demo @2026-06-12`           |
-| `pay rent @2026-07-01`    | `- [ ] pay rent @2026-07-01`       |
+| You type                    | Stored as                               |
+| --------------------------- | --------------------------------------- |
+| `ship the report`           | `- [ ] ship the report`                 |
+| `call mom tomorrow`         | `- [ ] call mom 📅 2026-06-10`          |
+| `demo due friday`           | `- [ ] demo 📅 2026-06-12`              |
+| `pay rent @today`           | `- [ ] pay rent 📅 2026-06-09`          |
+| `buy milk #home due monday` | `- [ ] buy milk #home 📅 2026-06-15`    |
+
+Dates can be written as `@today`, `@tomorrow`, `@friday`, `@2026-07-01`, the same
+words after `due`, or a bare trailing date word. `#tags` stay in the description
+and can be used to filter the list. Archived tasks get a `✅` completion date.
 
 ## Keys
 
@@ -49,6 +56,8 @@ Type `/` in the prompt to open the command menu (tab completes, enter runs):
 | ------------------ | --------------------------------------- |
 | `/cal`             | calendar view                           |
 | `/archive`         | archive view (`ctrl+u` to unarchive)    |
+| `/tag <name>`      | filter by #tag (`/tag` lists all tags)  |
+| `/all`             | clear the tag filter                    |
 | `/clear`           | archive all completed tasks             |
 | `/sort`            | sort tasks by due date (undated last)   |
 | `/stats`           | open / done / archived / overdue counts |

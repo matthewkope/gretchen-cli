@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Box, Text, useApp, useInput } from 'ink';
-import { loadTasks, saveTasks, loadArchive, saveArchive, archiveTask, parseInput, formatTask, today } from './store.js';
+import { loadTasks, saveTasks, loadArchive, saveArchive, archiveTask, parseInput, formatTask, getTags, today } from './store.js';
 import { Calendar } from './calendar.jsx';
 
 const ACCENT = '#d77757'; // Claude Code's terracotta
@@ -8,6 +8,8 @@ const ACCENT = '#d77757'; // Claude Code's terracotta
 const COMMANDS = [
   { name: 'cal', desc: 'open the calendar' },
   { name: 'archive', desc: 'view archived tasks' },
+  { name: 'tag', desc: 'filter by #tag — /tag name, /tag to list' },
+  { name: 'all', desc: 'clear the tag filter' },
   { name: 'clear', desc: 'archive all completed tasks' },
   { name: 'sort', desc: 'sort tasks by due date' },
   { name: 'stats', desc: 'task counts at a glance' },
@@ -15,7 +17,7 @@ const COMMANDS = [
   { name: 'exit', desc: 'quit gretchen' },
 ];
 
-const ALIASES = { quit: 'exit', q: 'exit', calendar: 'cal', sortby: 'sort' };
+const ALIASES = { quit: 'exit', q: 'exit', calendar: 'cal', sortby: 'sort', tags: 'tag' };
 
 function matchCommands(input) {
   if (!input.startsWith('/')) return [];
@@ -32,19 +34,33 @@ function resolveCommand(text) {
   return prefix.length === 1 ? prefix[0].name : null;
 }
 
-function Banner({ view }) {
+function Banner({ view, tagFilter }) {
   return (
     <Box borderStyle="round" borderColor={ACCENT} paddingX={1} flexDirection="column">
       <Text>
         <Text color={ACCENT}>✻ Gretchen</Text>
         <Text dimColor> v0.1.0 — terminal project management</Text>
       </Text>
-      <Text dimColor>
-        {view === 'home' && '~/.gretchen/tasks.md'}
-        {view === 'archive' && '~/.gretchen/archive.md'}
-        {view === 'calendar' && 'calendar'}
+      <Text>
+        <Text dimColor>
+          {view === 'home' && '~/.gretchen/tasks.md'}
+          {view === 'archive' && '~/.gretchen/archive.md'}
+          {view === 'calendar' && 'calendar'}
+        </Text>
+        {view === 'home' && tagFilter && <Text color="yellow"> · filtering {tagFilter}</Text>}
       </Text>
     </Box>
+  );
+}
+
+function Title({ title, selected, done }) {
+  const parts = title.split(/(#[\w][\w/-]*)/g);
+  return parts.map((p, i) =>
+    p.startsWith('#') ? (
+      <Text key={i} color="yellow">{p}</Text>
+    ) : (
+      <Text key={i} color={selected ? ACCENT : undefined} strikethrough={done}>{p}</Text>
+    )
   );
 }
 
@@ -53,13 +69,12 @@ function TaskLine({ task, selected }) {
     <Text>
       <Text color={selected ? ACCENT : undefined}>{selected ? '❯ ' : '  '}</Text>
       <Text color={task.done ? 'green' : 'white'}>{task.done ? '[x]' : '[ ]'}</Text>
-      <Text color={selected ? ACCENT : undefined} strikethrough={task.done}>
-        {' '}
-        {task.title}
-      </Text>
+      <Text> </Text>
+      <Title title={task.title} selected={selected} done={task.done} />
       {task.date && (
-        <Text color={task.date < today() && !task.done ? 'red' : 'cyan'}> @{task.date}</Text>
+        <Text color={task.date < today() && !task.done ? 'red' : 'cyan'}> 📅 {task.date}</Text>
       )}
+      {task.doneDate && <Text color="green"> ✅ {task.doneDate}</Text>}
     </Text>
   );
 }
@@ -68,8 +83,8 @@ function HelpBar({ view }) {
   if (view === 'home')
     return (
       <Text dimColor>
-        enter add task · ↑/↓ select · shift+↑/↓ reorder · enter (empty) toggle done · ctrl+space
-        archive · ctrl+d delete · / commands
+        enter add task ("buy milk #home due friday") · ↑/↓ select · shift+↑/↓ reorder · enter
+        (empty) toggle done · ctrl+space archive · ctrl+d delete · / commands
       </Text>
     );
   if (view === 'archive') return <Text dimColor>ctrl+u unarchive · ↑/↓ select · esc home</Text>;
@@ -84,6 +99,11 @@ export function App({ initialView = 'home' }) {
   const [sel, setSel] = useState(0);
   const [input, setInput] = useState('');
   const [flash, setFlash] = useState(null);
+  const [tagFilter, setTagFilter] = useState(null);
+
+  // the list shown on the home view; ops map back to real indices via identity
+  const visible = tagFilter ? tasks.filter((t) => getTags(t).includes(tagFilter)) : tasks;
+  const realIndex = (i) => tasks.indexOf(visible[i]);
 
   const persist = (next) => {
     setTasks(next);
@@ -118,48 +138,39 @@ export function App({ initialView = 'home' }) {
     }
 
     // --- home view ---
-    if (key.upArrow && key.shift) {
-      // reorder up (Cmd+Shift+↑ isn't visible to terminals, so Shift+↑)
-      if (sel > 0) {
+    if ((key.upArrow || key.downArrow) && key.shift) {
+      // reorder (Cmd+Shift+↑/↓ isn't visible to terminals, so Shift+↑/↓)
+      if (tagFilter) return note('Clear the tag filter (/all) to reorder.');
+      const dir = key.upArrow ? -1 : 1;
+      if (sel + dir >= 0 && sel + dir < tasks.length) {
         const next = [...tasks];
-        [next[sel - 1], next[sel]] = [next[sel], next[sel - 1]];
+        [next[sel], next[sel + dir]] = [next[sel + dir], next[sel]];
         persist(next);
-        setSel(sel - 1);
-      }
-      return;
-    }
-    if (key.downArrow && key.shift) {
-      if (sel < tasks.length - 1) {
-        const next = [...tasks];
-        [next[sel], next[sel + 1]] = [next[sel + 1], next[sel]];
-        persist(next);
-        setSel(sel + 1);
+        setSel(sel + dir);
       }
       return;
     }
     if (key.upArrow) return setSel((s) => Math.max(0, s - 1));
-    if (key.downArrow) return setSel((s) => Math.min(tasks.length - 1, s + 1));
+    if (key.downArrow) return setSel((s) => Math.min(visible.length - 1, s + 1));
 
-    // Ctrl+Space arrives as a NUL byte (Cmd+Ctrl+Space is reserved by macOS)
-    if (ch === '\u0000' || (key.ctrl && ch === ' ')) {
-      const task = tasks[sel];
+    // Ctrl+Space arrives as a NUL byte, which Ink reports as ctrl+` (Cmd+Ctrl+Space is reserved by macOS)
+    if (key.ctrl && (ch === ' ' || ch === '`' || ch === '\u0000')) {
+      const task = visible[sel];
       if (task) {
         archiveTask(task);
         setArchive(loadArchive());
-        const next = tasks.filter((_, i) => i !== sel);
-        persist(next);
-        setSel((s) => Math.max(0, Math.min(s, next.length - 1)));
+        persist(tasks.filter((t) => t !== task));
+        setSel((s) => Math.max(0, Math.min(s, visible.length - 2)));
         note(`Archived: ${task.title}`);
       }
       return;
     }
 
     if (key.ctrl && ch === 'd') {
-      const task = tasks[sel];
+      const task = visible[sel];
       if (task) {
-        const next = tasks.filter((_, i) => i !== sel);
-        persist(next);
-        setSel((s) => Math.max(0, Math.min(s, next.length - 1)));
+        persist(tasks.filter((t) => t !== task));
+        setSel((s) => Math.max(0, Math.min(s, visible.length - 2)));
         note(`Deleted: ${task.title}`);
       }
       return;
@@ -169,9 +180,13 @@ export function App({ initialView = 'home' }) {
       const text = input.trim();
       if (!text) {
         // toggle done on selected task
-        if (tasks[sel]) {
-          const next = tasks.map((t, i) => (i === sel ? { ...t, done: !t.done } : t));
-          persist(next);
+        const task = visible[sel];
+        if (task) {
+          persist(
+            tasks.map((t) =>
+              t === task ? { ...t, done: !t.done, doneDate: t.done ? null : today() } : t
+            )
+          );
         }
         return;
       }
@@ -185,8 +200,26 @@ export function App({ initialView = 'home' }) {
           return setView('archive');
         }
         if (cmd === 'help') {
-          note('Type a task and press enter. Dates: "@2026-06-15", "tomorrow", "friday". Type / for commands.');
+          note('Add tasks with #tags and dates: "@today", "due friday", "due 2026-06-15" → 📅. Type / for commands.');
           return;
+        }
+        if (cmd === 'tag') {
+          const arg = text.split(/\s+/)[1];
+          if (!arg) {
+            const counts = {};
+            for (const t of tasks) for (const tag of getTags(t)) counts[tag] = (counts[tag] || 0) + 1;
+            const list = Object.entries(counts).map(([t, n]) => `${t} (${n})`).join(' · ');
+            return note(list ? `Tags: ${list} — /tag <name> to filter.` : 'No tags yet. Add one with #name in a task.');
+          }
+          const tag = arg.startsWith('#') ? arg : `#${arg}`;
+          setTagFilter(tag);
+          setSel(0);
+          return note(`Filtering by ${tag} — /all to clear.`);
+        }
+        if (cmd === 'all') {
+          setTagFilter(null);
+          setSel(0);
+          return note('Tag filter cleared.');
         }
         if (cmd === 'clear') {
           const done = tasks.filter((t) => t.done);
@@ -237,7 +270,7 @@ export function App({ initialView = 'home' }) {
 
   return (
     <Box flexDirection="column" paddingX={1}>
-      <Banner view={view} />
+      <Banner view={view} tagFilter={tagFilter} />
 
       {view === 'calendar' && <Calendar tasks={tasks} accent={ACCENT} />}
 
@@ -253,9 +286,13 @@ export function App({ initialView = 'home' }) {
 
       {view === 'home' && (
         <Box flexDirection="column" marginTop={1}>
-          {tasks.length === 0 && <Text dimColor>No tasks yet. Type one below and press enter.</Text>}
-          {tasks.map((t, i) => (
-            <TaskLine key={i} task={t} selected={i === sel} />
+          {visible.length === 0 && (
+            <Text dimColor>
+              {tagFilter ? `No tasks tagged ${tagFilter}. /all clears the filter.` : 'No tasks yet. Type one below and press enter.'}
+            </Text>
+          )}
+          {visible.map((t, i) => (
+            <TaskLine key={realIndex(i)} task={t} selected={i === sel} />
           ))}
           <Box borderStyle="round" borderColor={ACCENT} paddingX={1} marginTop={1}>
             <Text color={ACCENT}>{'> '}</Text>

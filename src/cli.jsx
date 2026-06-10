@@ -13,7 +13,8 @@ Usage:
   gre help              show this help
 
 Inside the app:
-  type a task + enter   add a task ("ship report tomorrow", "demo @2026-06-15")
+  type a task + enter   add a task ("ship report due friday #work", "demo @today")
+                        #tags group tasks; dates become Obsidian Tasks format (📅 date)
   enter (empty input)   toggle done on the selected task
   up/down               select a task
   shift+up/down         reorder the selected task
@@ -23,6 +24,7 @@ Inside the app:
 Slash commands (type / to see the menu, tab completes):
   /cal                  open the calendar
   /archive              view archived tasks
+  /tag <name>           filter by #tag (/tag lists tags, /all clears)
   /clear                archive all completed tasks
   /sort                 sort tasks by due date
   /stats                task counts at a glance
