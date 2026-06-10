@@ -41,9 +41,19 @@ Type into the prompt and press **enter** — Gretchen formats the markdown for y
 | `enter` (empty)    | toggle done on the selected task        |
 | `ctrl+space`       | archive the selected task               |
 | `ctrl+d`           | delete the selected task                |
+## Slash commands
+
+Type `/` in the prompt to open the command menu (tab completes, enter runs):
+
+| Command            | Action                                  |
+| ------------------ | --------------------------------------- |
 | `/cal`             | calendar view                           |
 | `/archive`         | archive view (`ctrl+u` to unarchive)    |
-| `/quit` or `ctrl+c`| exit                                    |
+| `/clear`           | archive all completed tasks             |
+| `/sort`            | sort tasks by due date (undated last)   |
+| `/stats`           | open / done / archived / overdue counts |
+| `/help`            | in-app help                             |
+| `/exit` (`/quit`)  | exit (or `ctrl+c`)                      |
 
 > **Note on Cmd shortcuts:** macOS terminals never forward the ⌘ key to apps (and
 > ⌃⌘Space is the system emoji picker), so the originally requested ⌃⌘Space and

@@ -19,7 +19,15 @@ Inside the app:
   shift+up/down         reorder the selected task
   ctrl+space            archive the selected task
   ctrl+d                delete the selected task
-  /cal /archive /help /quit
+
+Slash commands (type / to see the menu, tab completes):
+  /cal                  open the calendar
+  /archive              view archived tasks
+  /clear                archive all completed tasks
+  /sort                 sort tasks by due date
+  /stats                task counts at a glance
+  /help                 in-app help
+  /exit (or /quit)      quit gretchen
 
 Tasks are stored as plain markdown in ~/.gretchen/tasks.md`);
   process.exit(0);
@@ -27,4 +35,5 @@ Tasks are stored as plain markdown in ~/.gretchen/tasks.md`);
 
 const initialView = arg === 'cal' || arg === 'calendar' ? 'calendar' : 'home';
 
-render(<App initialView={initialView} />);
+const app = render(<App initialView={initialView} />);
+app.waitUntilExit().then(() => process.exit(0));

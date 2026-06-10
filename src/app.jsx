@@ -2,29 +2,48 @@ import React, { useState } from 'react';
 import { Box, Text, useApp, useInput } from 'ink';
 import { loadTasks, saveTasks, loadArchive, saveArchive, archiveTask, parseInput, formatTask, today } from './store.js';
 import { Calendar } from './calendar.jsx';
-import { Mascot } from './mascot.jsx';
 
 const ACCENT = '#d77757'; // Claude Code's terracotta
 
+const COMMANDS = [
+  { name: 'cal', desc: 'open the calendar' },
+  { name: 'archive', desc: 'view archived tasks' },
+  { name: 'clear', desc: 'archive all completed tasks' },
+  { name: 'sort', desc: 'sort tasks by due date' },
+  { name: 'stats', desc: 'task counts at a glance' },
+  { name: 'help', desc: 'how to use gretchen' },
+  { name: 'exit', desc: 'quit gretchen' },
+];
+
+const ALIASES = { quit: 'exit', q: 'exit', calendar: 'cal', sortby: 'sort' };
+
+function matchCommands(input) {
+  if (!input.startsWith('/')) return [];
+  const q = input.slice(1).split(/\s/)[0].toLowerCase();
+  return COMMANDS.filter((c) => c.name.startsWith(q));
+}
+
+function resolveCommand(text) {
+  const q = text.slice(1).split(/\s/)[0].toLowerCase();
+  const name = ALIASES[q] || q;
+  const exact = COMMANDS.find((c) => c.name === name);
+  if (exact) return exact.name;
+  const prefix = COMMANDS.filter((c) => c.name.startsWith(name));
+  return prefix.length === 1 ? prefix[0].name : null;
+}
+
 function Banner({ view }) {
   return (
-    <Box borderStyle="round" borderColor={ACCENT} paddingX={1}>
-      {view === 'home' && (
-        <Box marginRight={2}>
-          <Mascot />
-        </Box>
-      )}
-      <Box flexDirection="column" justifyContent="center">
-        <Text>
-          <Text color={ACCENT}>✻ Gretchen</Text>
-          <Text dimColor> v0.1.0 — terminal project management</Text>
-        </Text>
-        <Text dimColor>
-          {view === 'home' && '~/.gretchen/tasks.md'}
-          {view === 'archive' && '~/.gretchen/archive.md'}
-          {view === 'calendar' && 'calendar'}
-        </Text>
-      </Box>
+    <Box borderStyle="round" borderColor={ACCENT} paddingX={1} flexDirection="column">
+      <Text>
+        <Text color={ACCENT}>✻ Gretchen</Text>
+        <Text dimColor> v0.1.0 — terminal project management</Text>
+      </Text>
+      <Text dimColor>
+        {view === 'home' && '~/.gretchen/tasks.md'}
+        {view === 'archive' && '~/.gretchen/archive.md'}
+        {view === 'calendar' && 'calendar'}
+      </Text>
     </Box>
   );
 }
@@ -50,7 +69,7 @@ function HelpBar({ view }) {
     return (
       <Text dimColor>
         enter add task · ↑/↓ select · shift+↑/↓ reorder · enter (empty) toggle done · ctrl+space
-        archive · ctrl+d delete · /cal /archive /help /quit
+        archive · ctrl+d delete · / commands
       </Text>
     );
   if (view === 'archive') return <Text dimColor>ctrl+u unarchive · ↑/↓ select · esc home</Text>;
@@ -157,17 +176,48 @@ export function App({ initialView = 'home' }) {
         return;
       }
       setInput('');
-      if (text === '/quit' || text === '/q' || text === '/exit') return exit();
-      if (text === '/cal' || text === '/calendar') return setView('calendar');
-      if (text === '/archive') {
-        setSel(0);
-        return setView('archive');
+      if (text.startsWith('/')) {
+        const cmd = resolveCommand(text);
+        if (cmd === 'exit') return exit();
+        if (cmd === 'cal') return setView('calendar');
+        if (cmd === 'archive') {
+          setSel(0);
+          return setView('archive');
+        }
+        if (cmd === 'help') {
+          note('Type a task and press enter. Dates: "@2026-06-15", "tomorrow", "friday". Type / for commands.');
+          return;
+        }
+        if (cmd === 'clear') {
+          const done = tasks.filter((t) => t.done);
+          if (done.length === 0) return note('No completed tasks to clear.');
+          done.forEach(archiveTask);
+          setArchive(loadArchive());
+          persist(tasks.filter((t) => !t.done));
+          setSel(0);
+          return note(`Archived ${done.length} completed task${done.length === 1 ? '' : 's'}.`);
+        }
+        if (cmd === 'sort') {
+          const next = [...tasks].sort((a, b) => {
+            if (!a.date && !b.date) return 0;
+            if (!a.date) return 1;
+            if (!b.date) return -1;
+            return a.date < b.date ? -1 : a.date > b.date ? 1 : 0;
+          });
+          persist(next);
+          setSel(0);
+          return note('Sorted by due date (undated tasks last).');
+        }
+        if (cmd === 'stats') {
+          const open = tasks.filter((t) => !t.done);
+          const dueToday = open.filter((t) => t.date === today()).length;
+          const overdue = open.filter((t) => t.date && t.date < today()).length;
+          return note(
+            `${open.length} open · ${tasks.length - open.length} done · ${archive.length} archived · ${dueToday} due today · ${overdue} overdue`
+          );
+        }
+        return note(`Unknown command: ${text} — type / to see commands.`);
       }
-      if (text === '/help') {
-        note('Type a task and press enter. Dates: "@2026-06-15", "tomorrow", "friday".');
-        return;
-      }
-      if (text.startsWith('/')) return note(`Unknown command: ${text}`);
       const task = parseInput(text);
       if (!task.title) return;
       persist([...tasks, task]);
@@ -176,6 +226,11 @@ export function App({ initialView = 'home' }) {
       return;
     }
 
+    if (key.tab) {
+      const matches = matchCommands(input);
+      if (matches.length > 0) setInput(`/${matches[0].name}`);
+      return;
+    }
     if (key.backspace || key.delete) return setInput((v) => v.slice(0, -1));
     if (ch && !key.ctrl && !key.meta && !key.escape && !key.tab) setInput((v) => v + ch);
   });
@@ -209,6 +264,20 @@ export function App({ initialView = 'home' }) {
               <Text color={ACCENT}>▌</Text>
             </Text>
           </Box>
+          {input.startsWith('/') && (
+            <Box flexDirection="column" paddingX={2}>
+              {matchCommands(input).map((c, i) => (
+                <Text key={c.name}>
+                  <Text color={i === 0 ? ACCENT : undefined} bold={i === 0}>
+                    /{c.name.padEnd(9)}
+                  </Text>
+                  <Text dimColor>{c.desc}</Text>
+                </Text>
+              ))}
+              {matchCommands(input).length === 0 && <Text dimColor>no matching command</Text>}
+              <Text dimColor>tab to complete · enter to run</Text>
+            </Box>
+          )}
         </Box>
       )}
 
