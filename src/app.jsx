@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Box, Text, useApp, useInput } from 'ink';
+import { Box, Text, useApp, useInput, useStdout } from 'ink';
 import {
   loadTasks, saveTasks, loadArchive, saveArchive, archiveTask, parseInput, formatTask,
   getTags, today, dateSuggestions, tagSuggestions, autoFormatDates, DATE_CTX,
@@ -56,6 +56,26 @@ function CommandsPanel({ accent }) {
         </Text>
       ))}
       <Text dimColor>type / to filter the menu · tab completes · esc closes this</Text>
+    </Box>
+  );
+}
+
+// One renderer for every popup menu — commands, dates, tags, projects, sort
+// keys, priorities. The activeMenu descriptor says what to list and how.
+function Picker({ menu, msel }) {
+  return (
+    <Box flexDirection="column" paddingX={2}>
+      {menu.header && <Text dimColor>{menu.header}</Text>}
+      {menu.items.map((item, i) => (
+        <Text key={menu.label(item)}>
+          <Text color={i === msel ? ACCENT : menu.color} bold={i === msel}>
+            {i === msel ? '❯ ' : '  '}{menu.label(item).padEnd(menu.pad || 0)}
+          </Text>
+          {menu.detail && <Text dimColor>{menu.detail(item)}</Text>}
+        </Text>
+      ))}
+      {menu.items.length === 0 && menu.empty && <Text dimColor>{menu.empty}</Text>}
+      <Text dimColor>{menu.hint}</Text>
     </Box>
   );
 }
@@ -119,6 +139,13 @@ function togglDescription(title) {
   );
 }
 
+// fit a list to the terminal: a window of up to `max` rows kept around `sel`
+function windowOf(length, sel, max) {
+  if (length <= max) return { start: 0, end: length };
+  const start = Math.max(0, Math.min(sel - Math.floor(max / 2), length - max));
+  return { start, end: start + max };
+}
+
 function fmtElapsed(ms) {
   const s = Math.floor(ms / 1000);
   const h = Math.floor(s / 3600);
@@ -169,7 +196,7 @@ function NavBar({ project, openCount }) {
               </Text>
             );
           })}
-          <Text dimColor>  — ctrl+p next · ctrl+0 prev · /project {'<name>'} jumps</Text>
+          <Text dimColor>  — ←/→ switch · /project {'<name>'} jumps</Text>
         </Text>
       )}
     </Box>
@@ -210,10 +237,12 @@ export function App({ initialView = 'home' }) {
   const [tokenPrompt, setTokenPrompt] = useState(false); // /toggl setup: paste-the-token prompt
   const [tokenInput, setTokenInput] = useState('');
   const [filePrompt, setFilePrompt] = useState(null); // { name, count } — offer to pull tagged inbox tasks into a new project
+  const [choice, setChoice] = useState(null); // { title, options, sel } — modal multiple-choice menu
   const [editing, setEditing] = useState(null); // task loaded into the input via ctrl+e
   const [tracking, setTracking] = useState(null); // { id, title, startedAt } — running Toggl entry
   const [, setTick] = useState(0);
   const projectRef = React.useRef(project); // current list, always fresh for key handlers
+  const escRef = React.useRef(0); // timestamp of the last bare esc, for esc-esc quit
 
   // re-render once a second while tracking so the elapsed time ticks
   useEffect(() => {
@@ -221,6 +250,16 @@ export function App({ initialView = 'home' }) {
     const timer = setInterval(() => setTick((n) => n + 1), 1000);
     return () => clearInterval(timer);
   }, [tracking]);
+
+  // long lists are windowed to the terminal height — re-render on resize
+  const { stdout } = useStdout();
+  const rows = stdout?.rows ?? 24;
+  useEffect(() => {
+    if (!stdout) return;
+    const onResize = () => setTick((n) => n + 1);
+    stdout.on('resize', onResize);
+    return () => stdout.off('resize', onResize);
+  }, [stdout]);
 
   // the list shown on the home view; ops map back to real indices via identity.
   // In the inbox, every project's tasks are shown too — they stay in their
@@ -267,21 +306,6 @@ export function App({ initialView = 'home' }) {
   // right after a 📅 date is completed, offer a priority
   const prioCtx = view === 'home' && !input.startsWith('/') && !hashCtx ? input.match(PRIO_CTX) : null;
   const prioMenu = prioCtx ? prioritySuggestions(prioCtx[2]) : [];
-  const menuLen = input.startsWith('/')
-    ? tagArgCtx && tagMenu.length > 0
-      ? tagMenu.length
-      : projArgCtx && projMenu.length > 0
-      ? projMenu.length
-      : sortArgCtx && sortMenu.length > 0
-      ? sortMenu.length
-      : cmdMenu.length
-    : hashCtx
-    ? tagMenu.length
-    : prioCtx
-    ? prioMenu.length
-    : dateMenu.length;
-  const msel = Math.min(menuSel, Math.max(0, menuLen - 1));
-
   const editInput = (fn) => {
     setInput(fn);
     setMenuSel(0);
@@ -312,6 +336,55 @@ export function App({ initialView = 'home' }) {
     if (!prioCtx || !s) return;
     editInput((v) => `${v.slice(0, prioCtx.index)}📅 ${prioCtx[1]} ${s.emoji ? `${s.emoji} ` : ''}`);
   };
+
+  // The one menu open right now, described uniformly: what to list, how a row
+  // looks, what tab/enter insert. Selection (msel) and rendering (<Picker>)
+  // read this instead of special-casing each picker. enterInserts marks menus
+  // where enter inserts into the input rather than submitting it.
+  const activeMenu = (() => {
+    if (view !== 'home') return null;
+    if (input.startsWith('/')) {
+      if (tagArgCtx && tagMenu.length > 0)
+        return { items: tagMenu, label: (s) => s.tag, pad: 14, color: 'yellow',
+                 detail: (s) => `${s.count} task${s.count === 1 ? '' : 's'}`,
+                 insert: insertTag, hint: '↑/↓ select · tab completes · enter filters' };
+      if (projArgCtx && projMenu.length > 0)
+        return { items: projMenu, label: (s) => s.name, pad: 16, color: 'magenta',
+                 detail: (s) => `${s.count} open task${s.count === 1 ? '' : 's'}`,
+                 insert: insertProject,
+                 hint: '↑/↓ select · tab completes · enter runs · a new name creates the project' };
+      if (sortArgCtx && sortMenu.length > 0)
+        return { items: sortMenu, label: (s) => s.key, pad: 13, header: 'sort by…',
+                 detail: (s) => s.desc, insert: insertSort,
+                 hint: '↑/↓ select · tab completes · enter sorts' };
+      return { items: cmdMenu, label: (c) => `/${c.name}`, pad: 10,
+               detail: (c) => c.desc, insert: (c) => editInput(() => `/${c.name}`),
+               empty: 'no matching command', hint: '↑/↓ select · tab to complete · enter to run' };
+    }
+    if (hashCtx && tagMenu.length > 0)
+      return { items: tagMenu, label: (s) => s.tag, pad: 14, color: 'yellow',
+               detail: (s) => `${s.count} task${s.count === 1 ? '' : 's'}`,
+               insert: insertTag, enterInserts: () => true,
+               hint: '↑/↓ select · tab or enter to insert' };
+    if (prioCtx && prioMenu.length > 0)
+      return { items: prioMenu, label: (s) => `${s.emoji || '─'} ${s.key}`,
+               header: 'set a priority?', insert: insertPriority,
+               enterInserts: (s) => !!s.emoji,
+               hint: '↑/↓ select · tab or enter sets it · enter on none submits' };
+    if (dateMenu.length > 0)
+      return { items: dateMenu, label: (s) => `📅 ${s.label}`, pad: 15,
+               detail: (s) => s.date, insert: insertDate, enterInserts: () => true,
+               hint: '↑/↓ select · tab or enter to insert' };
+    return null;
+  })();
+  const menuLen = activeMenu?.items.length ?? 0;
+  const msel = Math.min(menuSel, Math.max(0, menuLen - 1));
+
+  // viewport: long lists window around the selection so the chrome (banner,
+  // nav, input, open menu, help) always stays on screen
+  const menuRows = activeMenu ? activeMenu.items.length + 2 + (activeMenu.header ? 1 : 0) : 0;
+  const taskWin = windowOf(visible.length, sel, Math.max(4, rows - 13 - menuRows));
+  const archiveWin = windowOf(archive.length, sel, Math.max(4, rows - 12));
 
   // a task plus its sub-tasks (the lines below it with deeper indentation)
   const blockOf = (task) => {
@@ -358,6 +431,22 @@ export function App({ initialView = 'home' }) {
 
   const note = (msg) => setFlash(msg);
 
+  // /toggl actions shared by the args form and the multiple-choice menu
+  const togglSetup = () => {
+    openTokenPage();
+    setTokenPrompt(true);
+    setTokenInput('');
+    note(`Opened ${TOKEN_URL} in your browser.`);
+  };
+  const togglOff = () => {
+    if (process.env.TOGGL_API_TOKEN)
+      return note('Toggl token comes from $TOGGL_API_TOKEN — unset it to disconnect.');
+    clearToken();
+    setToggl(false);
+    setTracking(null);
+    note('Toggl disconnected — token removed from ~/.gretchen/toggl-token.');
+  };
+
   useInput((ch, key) => {
     if (key.ctrl && ch === 'c') return exit();
 
@@ -375,9 +464,13 @@ export function App({ initialView = 'home' }) {
           const nextArchive = archive.filter((_, i) => i !== sel);
           setArchive(nextArchive);
           saveArchive(nextArchive);
-          persist([...tasks, { ...item, done: false }]);
+          // always back to the inbox — archive entries don't track their source,
+          // so restoring into whatever project happens to be open would surprise
+          const inbox = [...loadTasks(null), { ...item, done: false, doneDate: null }];
+          saveTasks(inbox, null);
+          if (!project) setTasks(inbox);
           setSel((s) => Math.max(0, Math.min(s, nextArchive.length - 1)));
-          note(`Unarchived: ${item.title}`);
+          note(`Unarchived to inbox: ${item.title}`);
         }
       }
       return;
@@ -431,14 +524,33 @@ export function App({ initialView = 'home' }) {
       }
       return;
     }
+    // modal multiple-choice menu (Claude Code style): ↑/↓ + enter, 1-9, esc
+    if (choice) {
+      if (key.escape || key.backspace || key.delete) return setChoice(null);
+      if (key.upArrow || key.downArrow) {
+        const dir = key.upArrow ? -1 : 1;
+        return setChoice((c) => ({ ...c, sel: (c.sel + dir + c.options.length) % c.options.length }));
+      }
+      const num = parseInt(ch, 10);
+      const pick = key.return ? choice.options[choice.sel] : num >= 1 && num <= choice.options.length ? choice.options[num - 1] : null;
+      if (pick) {
+        setChoice(null);
+        pick.action();
+      }
+      return;
+    }
     if (key.escape) {
       if (editing) {
         setEditing(null);
         editInput(() => '');
         return note('Edit cancelled.');
       }
-      if (panel) setPanel(null);
-      return;
+      if (panel) return setPanel(null);
+      if (input) return editInput(() => ''); // esc clears the input line outright
+      // nothing to dismiss: esc-esc quits straight back to the shell
+      if (Date.now() - escRef.current < 2000) return exit();
+      escRef.current = Date.now();
+      return note('esc again to quit gretchen');
     }
     if ((key.upArrow || key.downArrow) && key.shift) {
       // reorder (Cmd+Shift+↑/↓ isn't visible to terminals, so Shift+↑/↓)
@@ -535,9 +647,13 @@ export function App({ initialView = 'home' }) {
 
     // cycle through the lists in the nav bar: ctrl+p forward, ctrl+0 back
     // (ctrl+o too — many terminals can't transmit ctrl+digit)
-    if (key.ctrl && (ch === 'p' || ch === '0' || ch === 'o')) {
+    // ←/→ (with an empty input) cycle the nav bar too, like ctrl+p/ctrl+0
+    if (
+      (key.ctrl && (ch === 'p' || ch === '0' || ch === 'o')) ||
+      ((key.leftArrow || key.rightArrow) && !input)
+    ) {
       const items = [null, ...listProjects()];
-      const dir = ch === 'p' ? 1 : -1;
+      const dir = ch === 'p' || key.rightArrow ? 1 : -1;
       // step from the ref, not render state — rapid presses land before the
       // re-render, and stepping from a stale list makes cycling feel stuck
       const next = items[(items.indexOf(projectRef.current) + dir + items.length) % items.length];
@@ -601,13 +717,10 @@ export function App({ initialView = 'home' }) {
     }
 
     if (key.return) {
-      // with the date or tag picker open, enter inserts the highlighted entry;
-      // the next enter submits the task
-      if (dateMenu.length > 0) return insertDate(dateMenu[msel]);
-      if (hashCtx && tagMenu.length > 0) return insertTag(tagMenu[msel]);
-      // priority picker: enter sets the highlighted priority; "none" falls
-      // through so plain enter still submits the task
-      if (prioCtx && prioMenu.length > 0 && prioMenu[msel]?.emoji) return insertPriority(prioMenu[msel]);
+      // pickers that insert on enter (dates, #tags, priorities) — the next
+      // enter submits; priority "none" falls through so enter just submits
+      if (activeMenu?.enterInserts?.(activeMenu.items[msel]))
+        return activeMenu.insert(activeMenu.items[msel]);
       const text = input.trim();
       if (editing) {
         // saving an edit: rewrite the task in place, keeping done state,
@@ -672,14 +785,8 @@ export function App({ initialView = 'home' }) {
         }
         if (cmd === 'project') {
           const arg = (projArgCtx && projMenu[msel]?.name) || text.split(/\s+/)[1];
-          if (!arg) {
-            const names = listProjects();
-            return note(
-              names.length
-                ? `Projects: ${names.join(' · ')} — /project <name> opens, /inbox returns.`
-                : 'No projects yet. /project <name> creates one.'
-            );
-          }
+          // bare /project opens the picker, like /sort
+          if (!arg) return editInput(() => '/project ');
           if (arg === 'inbox') {
             openProject(null);
             return note('Inbox.');
@@ -703,7 +810,7 @@ export function App({ initialView = 'home' }) {
         }
         if (cmd === 'move') {
           const arg = (projArgCtx && projMenu[msel]?.name) || text.split(/\s+/)[1];
-          if (!arg) return note('Usage: /move <project> — moves the selected task (inbox works too).');
+          if (!arg) return editInput(() => '/move ');
           const task = visible[sel];
           if (!task) return note('No task selected.');
           const dest = arg === 'inbox' ? null : slugifyProject(arg);
@@ -759,12 +866,7 @@ export function App({ initialView = 'home' }) {
         if (cmd === 'tag') {
           // prefer the highlighted suggestion over the partial that was typed
           const arg = (tagArgCtx && tagMenu[msel]?.tag) || text.split(/\s+/)[1];
-          if (!arg) {
-            const counts = {};
-            for (const t of tasks) for (const tag of getTags(t)) counts[tag] = (counts[tag] || 0) + 1;
-            const list = Object.entries(counts).map(([t, n]) => `${t} (${n})`).join(' · ');
-            return note(list ? `Tags: ${list} — /tag <name> to filter.` : 'No tags yet. Add one with #name in a task.');
-          }
+          if (!arg) return editInput(() => '/tag ');
           const tag = arg.startsWith('#') ? arg : `#${arg}`;
           setTagFilter(tag);
           setSel(0);
@@ -788,6 +890,38 @@ export function App({ initialView = 'home' }) {
         }
         if (cmd === 'time') {
           const [, arg, value] = text.split(/\s+/);
+          if (!arg) {
+            // bare /time opens a multiple-choice menu, like /toggl
+            const s = timeStats();
+            setChoice({
+              title: 'Time log',
+              sel: 0,
+              options: [
+                {
+                  label: 'Stats',
+                  desc: s.entries === 0 ? 'no entries yet' : `${s.entries} entries · ${s.today} today · ${s.total} total`,
+                  action: () =>
+                    note(
+                      s.entries === 0
+                        ? `No time entries yet — ctrl+t on a task starts the timer. Log: ${timeCsvPath()}`
+                        : `${s.entries} entr${s.entries === 1 ? 'y' : 'ies'} · ${s.today} today · ${s.total} total · ${timeCsvPath()}`
+                    ),
+                },
+                { label: 'Open time.csv', desc: timeCsvPath(), action: () => {
+                  import('node:child_process').then(({ spawn }) =>
+                    spawn('open', [timeCsvPath()], { detached: true, stdio: 'ignore' }).unref()
+                  );
+                  note(`Opening ${timeCsvPath()}`);
+                } },
+                {
+                  label: 'Set import email',
+                  desc: getEmail() || 'used to match you on Toggl CSV import',
+                  action: () => editInput(() => '/time email '),
+                },
+              ],
+            });
+            return;
+          }
           if (arg === 'email') {
             if (!value)
               return note(
@@ -844,23 +978,37 @@ export function App({ initialView = 'home' }) {
             saveMap(map);
             return note(`Unmapped ${from} (was → ${was}).`);
           }
-          if (!arg && toggl)
-            return note('Toggl is on — ctrl+t tracks the selected task · /toggl map routes projects/tags · /toggl off disconnects.');
-          if (!arg || arg === 'setup') {
-            // open the browser on the profile page and wait for the paste
-            openTokenPage();
-            setTokenPrompt(true);
-            setTokenInput('');
-            return note(`Opened ${TOKEN_URL} in your browser.`);
+          if (!arg) {
+            // bare /toggl opens a multiple-choice menu
+            const map = loadMap();
+            const n = Object.keys(map).length;
+            setChoice({
+              title: toggl ? 'Toggl Track — connected' : 'Toggl Track — not connected',
+              sel: 0,
+              options: toggl
+                ? [
+                    {
+                      label: 'View mappings',
+                      desc: `${n} mapping${n === 1 ? '' : 's'}`,
+                      action: () => {
+                        const list = Object.entries(map).map(([k, v]) => `${k} → ${v}`).join(' · ');
+                        note(list ? `Toggl mappings: ${list}` : 'No mappings yet — projects/tags route by name.');
+                      },
+                    },
+                    { label: 'Add mapping', desc: 'route a project or #tag to a Toggl project', action: () => editInput(() => '/toggl map ') },
+                    { label: 'Remove mapping', desc: 'delete one of the routes', action: () => editInput(() => '/toggl unmap ') },
+                    { label: 'Reconnect', desc: 'paste a new API token', action: togglSetup },
+                    { label: 'Disconnect', desc: 'stop pushing time entries to Toggl', action: togglOff },
+                  ]
+                : [
+                    { label: 'Connect Toggl', desc: 'opens the token page in your browser', action: togglSetup },
+                    { label: 'Not now', desc: 'ctrl+t time tracking stays local-only', action: () => {} },
+                  ],
+            });
+            return;
           }
-          if (arg === 'off') {
-            if (process.env.TOGGL_API_TOKEN)
-              return note('Toggl token comes from $TOGGL_API_TOKEN — unset it to disconnect.');
-            clearToken();
-            setToggl(false);
-            setTracking(null);
-            return note('Toggl disconnected — token removed from ~/.gretchen/toggl-token.');
-          }
+          if (arg === 'setup') return togglSetup();
+          if (arg === 'off') return togglOff();
           note('Toggl: checking token…');
           verifyToken(arg)
             .then((me) => {
@@ -919,17 +1067,12 @@ export function App({ initialView = 'home' }) {
         persist(tasks.map((t) => (t === task ? { ...t, indent: next } : t)));
         return;
       }
-      if (tagMenu.length > 0) return insertTag(tagMenu[msel]);
-      if (projArgCtx && projMenu.length > 0) return insertProject(projMenu[msel]);
-      if (sortArgCtx && sortMenu.length > 0) return insertSort(sortMenu[msel]);
-      if (prioCtx && prioMenu.length > 0) return insertPriority(prioMenu[msel]);
-      if (dateMenu.length > 0) return insertDate(dateMenu[msel]);
-      if (cmdMenu.length > 0) editInput(() => `/${cmdMenu[msel].name}`);
+      if (activeMenu && activeMenu.items.length > 0) activeMenu.insert(activeMenu.items[msel]);
       return;
     }
     if (key.backspace || key.delete) {
-      // with the command menu open, one backspace dismisses the whole thing
-      if (input.startsWith('/')) return editInput(() => '');
+      // deletes one character; the command menu closes by itself once the
+      // leading "/" is gone (esc also clears a command line outright)
       return editInput((v) => v.slice(0, -1));
     }
     if (ch && !key.ctrl && !key.meta && !key.escape && !key.tab)
@@ -946,9 +1089,11 @@ export function App({ initialView = 'home' }) {
         <Box flexDirection="column" marginTop={1}>
           <Text bold>Archive ({archive.length})</Text>
           {archive.length === 0 && <Text dimColor>Nothing archived yet. Ctrl+Space a task to send it here.</Text>}
-          {archive.map((t, i) => {
+          {archiveWin.start > 0 && <Text dimColor>  ↑ {archiveWin.start} more</Text>}
+          {archive.slice(archiveWin.start, archiveWin.end).map((t, wi) => {
+            const i = archiveWin.start + wi;
             const s = archiveSections(t);
-            const prev = i > 0 ? archiveSections(archive[i - 1]) : {};
+            const prev = wi > 0 ? archiveSections(archive[i - 1]) : {};
             return (
               <Box key={i} flexDirection="column">
                 {s.year !== prev.year && <Text bold color={ACCENT}>{s.year}</Text>}
@@ -960,6 +1105,9 @@ export function App({ initialView = 'home' }) {
               </Box>
             );
           })}
+          {archiveWin.end < archive.length && (
+            <Text dimColor>  ↓ {archive.length - archiveWin.end} more</Text>
+          )}
         </Box>
       )}
 
@@ -981,17 +1129,38 @@ export function App({ initialView = 'home' }) {
               {tagFilter ? `No tasks tagged ${tagFilter}. /all clears the filter.` : 'No tasks yet. Type one below and press enter.'}
             </Text>
           )}
-          {visible.map((t, i) => (
-            <TaskLine
-              key={visible[i].src ? `${visible[i].src}:${visible[i].srcIdx}` : `inbox:${realIndex(i)}`}
-              task={t}
-              selected={i === sel}
-              tracked={toggl && tracking?.title === t.title}
-              elapsed={tracking ? Date.now() - tracking.startedAt : 0}
-              toggl={toggl}
-            />
-          ))}
+          {taskWin.start > 0 && <Text dimColor>  ↑ {taskWin.start} more</Text>}
+          {visible.slice(taskWin.start, taskWin.end).map((t, wi) => {
+            const i = taskWin.start + wi;
+            return (
+              <TaskLine
+                key={t.src ? `${t.src}:${t.srcIdx}` : `inbox:${realIndex(i)}`}
+                task={t}
+                selected={i === sel}
+                tracked={toggl && tracking?.title === t.title}
+                elapsed={tracking ? Date.now() - tracking.startedAt : 0}
+                toggl={toggl}
+              />
+            );
+          })}
+          {taskWin.end < visible.length && (
+            <Text dimColor>  ↓ {visible.length - taskWin.end} more</Text>
+          )}
           {panel === 'commands' && <CommandsPanel accent={ACCENT} />}
+          {choice && (
+            <Box flexDirection="column" borderStyle="round" borderColor={ACCENT} paddingX={1} marginTop={1}>
+              <Text bold color={ACCENT}>{choice.title}</Text>
+              {choice.options.map((o, i) => (
+                <Text key={o.label}>
+                  <Text color={i === choice.sel ? ACCENT : undefined} bold={i === choice.sel}>
+                    {i === choice.sel ? '❯ ' : '  '}{i + 1}. {o.label.padEnd(17)}
+                  </Text>
+                  <Text dimColor>{o.desc}</Text>
+                </Text>
+              ))}
+              <Text dimColor>↑/↓ select · enter confirm · 1-{choice.options.length} quick pick · esc cancel</Text>
+            </Box>
+          )}
           {tokenPrompt ? (
             <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} marginTop={1}>
               <Text bold color="cyan">Connect Toggl Track</Text>
@@ -1014,92 +1183,7 @@ export function App({ initialView = 'home' }) {
               <Text color={ACCENT}>▌</Text>
             </Box>
           )}
-          {input.startsWith('/') && !(tagArgCtx && tagMenu.length > 0) && !(projArgCtx && projMenu.length > 0) && !(sortArgCtx && sortMenu.length > 0) && (
-            <Box flexDirection="column" paddingX={2}>
-              {cmdMenu.map((c, i) => (
-                <Text key={c.name}>
-                  <Text color={i === msel ? ACCENT : undefined} bold={i === msel}>
-                    {i === msel ? '❯ ' : '  '}/{c.name.padEnd(9)}
-                  </Text>
-                  <Text dimColor>{c.desc}</Text>
-                </Text>
-              ))}
-              {cmdMenu.length === 0 && <Text dimColor>no matching command</Text>}
-              <Text dimColor>↑/↓ select · tab to complete · enter to run</Text>
-            </Box>
-          )}
-          {dateMenu.length > 0 && (
-            <Box flexDirection="column" paddingX={2}>
-              {dateMenu.map((s, i) => (
-                <Text key={s.label}>
-                  <Text color={i === msel ? ACCENT : undefined} bold={i === msel}>
-                    {i === msel ? '❯ ' : '  '}📅 {s.label.padEnd(12)}
-                  </Text>
-                  <Text dimColor>{s.date}</Text>
-                </Text>
-              ))}
-              <Text dimColor>↑/↓ select · tab or enter to insert</Text>
-            </Box>
-          )}
-          {tagMenu.length > 0 && (
-            <Box flexDirection="column" paddingX={2}>
-              {tagMenu.map((s, i) => (
-                <Text key={s.tag}>
-                  <Text color={i === msel ? ACCENT : 'yellow'} bold={i === msel}>
-                    {i === msel ? '❯ ' : '  '}{s.tag.padEnd(14)}
-                  </Text>
-                  <Text dimColor>
-                    {s.count} task{s.count === 1 ? '' : 's'}
-                  </Text>
-                </Text>
-              ))}
-              <Text dimColor>
-                {tagArgCtx ? '↑/↓ select · tab completes · enter filters' : '↑/↓ select · tab or enter to insert'}
-              </Text>
-            </Box>
-          )}
-          {projArgCtx && projMenu.length > 0 && (
-            <Box flexDirection="column" paddingX={2}>
-              {projMenu.map((s, i) => (
-                <Text key={s.name}>
-                  <Text color={i === msel ? ACCENT : 'magenta'} bold={i === msel}>
-                    {i === msel ? '❯ ' : '  '}{s.name.padEnd(16)}
-                  </Text>
-                  <Text dimColor>
-                    {s.count} open task{s.count === 1 ? '' : 's'}
-                  </Text>
-                </Text>
-              ))}
-              <Text dimColor>↑/↓ select · tab completes · enter runs · a new name creates the project</Text>
-            </Box>
-          )}
-          {sortArgCtx && sortMenu.length > 0 && (
-            <Box flexDirection="column" paddingX={2}>
-              <Text dimColor>sort by…</Text>
-              {sortMenu.map((s, i) => (
-                <Text key={s.key}>
-                  <Text color={i === msel ? ACCENT : undefined} bold={i === msel}>
-                    {i === msel ? '❯ ' : '  '}{s.key.padEnd(13)}
-                  </Text>
-                  <Text dimColor>{s.desc}</Text>
-                </Text>
-              ))}
-              <Text dimColor>↑/↓ select · tab completes · enter sorts</Text>
-            </Box>
-          )}
-          {prioCtx && prioMenu.length > 0 && (
-            <Box flexDirection="column" paddingX={2}>
-              <Text dimColor>set a priority?</Text>
-              {prioMenu.map((s, i) => (
-                <Text key={s.key}>
-                  <Text color={i === msel ? ACCENT : undefined} bold={i === msel}>
-                    {i === msel ? '❯ ' : '  '}{s.emoji || '─'} {s.key}
-                  </Text>
-                </Text>
-              ))}
-              <Text dimColor>↑/↓ select · tab or enter sets it · enter on none submits</Text>
-            </Box>
-          )}
+          {activeMenu && <Picker menu={activeMenu} msel={msel} />}
         </Box>
       )}
 

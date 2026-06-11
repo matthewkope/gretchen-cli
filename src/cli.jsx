@@ -54,5 +54,12 @@ Storage (plain markdown, Obsidian-compatible):
 
 const initialView = arg === 'cal' || arg === 'calendar' ? 'calendar' : 'home';
 
+// run in the alternate screen buffer (like vim/htop): no frames left behind
+// in the scrollback, and the previous shell contents return on exit
+if (process.stdout.isTTY) {
+  process.stdout.write('\x1b[?1049h\x1b[H');
+  process.on('exit', () => process.stdout.write('\x1b[?1049l'));
+}
+
 const app = render(<App initialView={initialView} />);
 app.waitUntilExit().then(() => process.exit(0));
