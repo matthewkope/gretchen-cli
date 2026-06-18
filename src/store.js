@@ -5,6 +5,7 @@ import path from 'node:path';
 const DIR = path.join(os.homedir(), '.gretchen');
 const TASKS_FILE = path.join(DIR, 'tasks.md');
 const ARCHIVE_FILE = path.join(DIR, 'archive.md');
+const BOARD_FILE = path.join(DIR, 'kanban.md');
 const PROJECTS_DIR = path.join(DIR, 'projects');
 
 const TASK_RE = /^(\s*)- \[( |x)\] (.*)$/;
@@ -267,6 +268,69 @@ export function archiveTask(task) {
   // the archive is flat (grouped by completion week), so nesting is dropped
   archive.unshift({ ...task, done: true, doneDate: task.doneDate || today(), indent: 0 });
   saveArchive(archive);
+}
+
+// ── Kanban board (kanban.md) ───────────────────────────────────────────────
+// Shared verbatim with the web app's lib/store.js. The board is its own file in
+// the Obsidian Kanban plugin's format (frontmatter + `## Lane` headings +
+// `- [ ]` cards + settings footer), so ~/.gretchen/kanban.md opens as a board in
+// Obsidian and is the single source of truth across the app, the web UI and here.
+const DEFAULT_COLUMNS = ['To do', 'In Progress', 'Done'];
+
+export function boardFile() {
+  return BOARD_FILE;
+}
+
+export function loadBoard() {
+  ensureDir();
+  if (!fs.existsSync(BOARD_FILE)) {
+    const columns = DEFAULT_COLUMNS.map((name) => ({ name, cards: [] }));
+    saveBoard(columns);
+    return columns;
+  }
+  const lines = fs.readFileSync(BOARD_FILE, 'utf8').split('\n');
+  let i = 0;
+  if (lines[0]?.trim() === '---') {
+    i = 1;
+    while (i < lines.length && lines[i].trim() !== '---') i++;
+    i++;
+  }
+  const columns = [];
+  let cur = null;
+  for (; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.trim().startsWith('%%')) break; // the %% kanban:settings footer
+    const h = line.match(/^#+\s+(.*\S)\s*$/);
+    if (h) {
+      cur = { name: h[1].trim(), cards: [] };
+      columns.push(cur);
+      continue;
+    }
+    const t = parseLine(line);
+    if (t && cur) cur.cards.push({ ...t, indent: 0 }); // the board is flat
+  }
+  if (!columns.length) {
+    const def = DEFAULT_COLUMNS.map((name) => ({ name, cards: [] }));
+    saveBoard(def);
+    return def;
+  }
+  return columns;
+}
+
+export function saveBoard(columns) {
+  ensureDir();
+  const fence = '```';
+  const lanes = columns
+    .map((c) => {
+      const cards = c.cards.map((t) => formatTask({ ...t, indent: 0 })).join('\n');
+      return `## ${c.name}\n\n${cards}${cards ? '\n' : ''}`;
+    })
+    .join('\n');
+  const body =
+    '---\n\nkanban-plugin: board\n\n---\n\n' +
+    lanes +
+    `\n\n%% kanban:settings\n${fence}\n{"kanban-plugin":"board"}\n${fence}\n%%\n`;
+  fs.writeFileSync(BOARD_FILE, body);
 }
 
 function iso(d) {

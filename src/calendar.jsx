@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Box, Text, useInput, useStdout } from 'ink';
 import { today } from './store.js';
+import { fetchEvents } from './applecal.js';
 
 const MONTHS = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -11,6 +12,29 @@ const MODES = ['month', 'week', 'day'];
 
 function iso(d) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// [start, end) covering the cells the given view shows, as YYYY-MM-DD
+function visibleRange(cursor, mode) {
+  const at = (y, m, d) => iso(new Date(y, m, d));
+  if (mode === 'day') return [iso(cursor), at(cursor.getFullYear(), cursor.getMonth(), cursor.getDate() + 1)];
+  if (mode === 'week') {
+    const ws = new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate() - cursor.getDay());
+    return [iso(ws), at(ws.getFullYear(), ws.getMonth(), ws.getDate() + 7)];
+  }
+  const first = new Date(cursor.getFullYear(), cursor.getMonth(), 1);
+  const start = new Date(first.getFullYear(), first.getMonth(), 1 - first.getDay());
+  return [iso(start), at(start.getFullYear(), start.getMonth(), start.getDate() + 42)];
+}
+
+// "...T09:30:00-07:00" → "9:30a" for timed events in the day view
+function fmtTime(isoStr) {
+  const m = (isoStr || '').match(/T(\d{2}):(\d{2})/);
+  if (!m) return '';
+  let h = Number(m[1]);
+  const ap = h < 12 ? 'a' : 'p';
+  h = h % 12 || 12;
+  return m[2] === '00' ? `${h}${ap}` : `${h}:${m[2]}${ap}`;
 }
 
 // pad/truncate to exactly w columns (truncates with an ellipsis)
@@ -80,9 +104,9 @@ function Grid({ weeks, month, cursor, byDate, accent, todayStr, cellW, eventRows
                     else
                       cell = (
                         <Text
-                          color={t.done ? 'green' : 'cyan'}
-                          dimColor={t.done || !inMonth}
-                          strikethrough={t.done}
+                          color={t.isEvent ? 'magenta' : t.done ? 'green' : 'cyan'}
+                          dimColor={!inMonth || (t.done && !t.isEvent)}
+                          strikethrough={t.done && !t.isEvent}
                         >
                           {fit(` ${t.title}`, cellW)}
                         </Text>
@@ -114,15 +138,21 @@ function DayView({ cursor, byDate, accent, todayStr }) {
         {DOW[cursor.getDay()]}, {MONTHS[cursor.getMonth()]} {cursor.getDate()}, {cursor.getFullYear()}
         {dateStr === todayStr ? ' (today)' : ''}
       </Text>
-      {dayTasks.length === 0 && <Text dimColor>No tasks due this day.</Text>}
-      {dayTasks.map((t, i) => (
-        <Text key={i}>
-          <Text color={t.done ? 'green' : 'white'}>{t.done ? '[x]' : '[ ]'}</Text>{' '}
-          <Text strikethrough={t.done} dimColor={t.done} color={!t.done && t.date < todayStr ? 'red' : undefined}>
-            {t.title}
+      {dayTasks.length === 0 && <Text dimColor>Nothing on this day.</Text>}
+      {dayTasks.map((t, i) =>
+        t.isEvent ? (
+          <Text key={i} color="magenta">
+            {t.title}{!t.allDay && t.start ? `  ${fmtTime(t.start)}` : ''}
           </Text>
-        </Text>
-      ))}
+        ) : (
+          <Text key={i}>
+            <Text color={t.done ? 'green' : 'white'}>{t.done ? '[x]' : '[ ]'}</Text>{' '}
+            <Text strikethrough={t.done} dimColor={t.done} color={!t.done && t.date < todayStr ? 'red' : undefined}>
+              {t.title}
+            </Text>
+          </Text>
+        )
+      )}
     </Box>
   );
 }
@@ -132,11 +162,22 @@ export function Calendar({ tasks, accent }) {
   const now = new Date();
   const [cursor, setCursor] = useState(new Date(now.getFullYear(), now.getMonth(), now.getDate()));
   const [mode, setMode] = useState('month');
+  const [appleEvents, setAppleEvents] = useState([]);
+
+  // read-only Apple Calendar events for the visible range. Empty unless the
+  // calbridge helper is built and Calendar access is granted to this terminal;
+  // toggles are managed in the web/app (~/.gretchen/calendars.json), honored here.
+  useEffect(() => {
+    let live = true;
+    const [start, end] = visibleRange(cursor, mode);
+    fetchEvents(start, end).then((r) => { if (live) setAppleEvents(r.events || []); }).catch(() => {});
+    return () => { live = false; };
+  }, [cursor.getTime(), mode]);
 
   const byDate = {};
-  for (const t of tasks) {
-    if (t.date) (byDate[t.date] ||= []).push(t);
-  }
+  for (const t of tasks) if (t.date) (byDate[t.date] ||= []).push(t);
+  for (const e of appleEvents)
+    if (e.date) (byDate[e.date] ||= []).push({ title: `◦ ${e.title}`, date: e.date, isEvent: true, allDay: e.allDay, start: e.start });
 
   useInput((ch, key) => {
     const move = (days) => setCursor((c) => new Date(c.getFullYear(), c.getMonth(), c.getDate() + days));
@@ -188,7 +229,7 @@ export function Calendar({ tasks, accent }) {
       ? `Week of ${MONTHS[weekStart.getMonth()]} ${weekStart.getDate()}, ${weekStart.getFullYear()}`
       : `${MONTHS[cursor.getMonth()]} ${cursor.getFullYear()}`;
 
-  const selTasks = byDate[iso(cursor)] || [];
+  const selTasks = (byDate[iso(cursor)] || []).filter((t) => !t.isEvent);
 
   return (
     <Box flexDirection="column" marginTop={1}>

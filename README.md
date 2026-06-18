@@ -108,6 +108,16 @@ task text and filed under the Toggl project matching the current Gretchen
 project (or first `#tag`; `/toggl map` overrides the routing). The local CSV
 is still written either way. `/toggl off` goes back to local-only.
 
+## Oura Ring sleep (optional)
+
+`/oura` opens [cloud.ouraring.com's personal-access-token page](https://cloud.ouraring.com/personal-access-tokens);
+paste a token into the prompt and the inbox header shows last night at a
+glance: sleep score, readiness score, time slept, and Oura's ideal bedtime
+window for tonight (when your account has enough recent nights for the
+guidance to exist). Data refreshes on launch; `/oura refresh` re-fetches,
+`/oura off` disconnects. The token lives in `~/.gretchen/oura-token`
+(`$OURA_API_TOKEN` also works).
+
 ## Slash commands
 
 | Command            | Action                                              |
@@ -124,6 +134,7 @@ is still written either way. `/toggl off` goes back to local-only.
 | `/stats`           | open / done / archived / due / overdue / projects   |
 | `/time`            | local time log — `email <addr>`, `open` (`/timer`)  |
 | `/toggl`           | also push entries live to Toggl (`/toggl off`)      |
+| `/oura`            | Oura sleep in the inbox header (`/sleep`, `/ring`)  |
 | `/commands`        | full command list with aliases (`/cmds`)            |
 | `/exit`            | quit (`/quit`, `/q`, or ctrl+c)                     |
 
@@ -161,6 +172,7 @@ Everything is plain markdown you can edit by hand (or open in Obsidian):
 - `~/.gretchen/archive.md` — archived tasks, grouped by year/month/week
 - `~/.gretchen/time.csv` — time entries, Toggl-import-ready
 - `~/.gretchen/toggl-token` — Toggl API token, if connected
+- `~/.gretchen/oura-token` — Oura personal access token, if connected
 
 ## Development
 

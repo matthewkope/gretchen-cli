@@ -8,16 +8,23 @@ import {
   prioritySuggestions, priorityEmoji, PRIO_CTX,
 } from './store.js';
 import { Calendar } from './calendar.jsx';
+import { Kanban } from './kanban.jsx';
 import {
   togglToken, verifyToken, saveToken, clearToken, startEntry, stopEntry, openTokenPage, TOKEN_URL,
   loadMap, saveMap, mapKey, togglProjectByName,
 } from './toggl.js';
 import { logEntry, timeStats, timeCsvPath, getEmail, setEmail } from './timer.js';
+import { loadLocation, saveLocation, clearLocation, geocode, sunTimes, fmtSunTime } from './sun.js';
+import {
+  ouraToken, verifyOuraToken, saveOuraToken, clearOuraToken, openOuraTokenPage, OURA_TOKEN_URL,
+  fetchSleepSummary, fmtSleepDuration, fmtClockOffset,
+} from './oura.js';
 
 const ACCENT = '#d77757'; // Claude Code's terracotta
 
 const COMMANDS = [
   { name: 'cal', desc: 'open the calendar' },
+  { name: 'kanban', desc: 'open the kanban board' },
   { name: 'archive', desc: 'archive all completed tasks' },
   { name: 'archived', desc: 'view archived tasks' },
   { name: 'project', desc: 'open or create a project — /project name' },
@@ -28,16 +35,19 @@ const COMMANDS = [
   { name: 'all', desc: 'clear the tag filter' },
   { name: 'sort', desc: 'sort tasks — /sort priority · due · tag · description · status' },
   { name: 'stats', desc: 'task counts at a glance' },
-  { name: 'time', desc: 'local time log — /time email <addr> · /time open' },
+  { name: 'timelog', desc: 'local time log — /timelog email <addr> · /timelog open' },
+  { name: 'location', desc: 'set your location — sunrise/sunset show in the inbox' },
+  { name: 'oura', desc: 'Oura Ring sleep — score, readiness, ideal bedtime (/oura off)' },
   { name: 'toggl', desc: 'push time entries live to Toggl — map <name> <project> · unmap · off' },
   { name: 'commands', desc: 'list all commands and what they do' },
   { name: 'exit', desc: 'quit gretchen' },
 ];
 
 const ALIASES = {
-  quit: 'exit', q: 'exit', calendar: 'cal', sortby: 'sort', tags: 'tag',
+  quit: 'exit', q: 'exit', calendar: 'cal', kan: 'kanban', board: 'kanban', sortby: 'sort', tags: 'tag',
   cmds: 'commands', clear: 'archive', projects: 'project', proj: 'project', mv: 'move', home: 'inbox',
-  sweep: 'file', timer: 'time', csv: 'time',
+  sweep: 'file', time: 'timelog', timer: 'timelog', csv: 'timelog', loc: 'location', sun: 'location',
+  sleep: 'oura', ring: 'oura',
 };
 
 // reverse map: command name → its aliases, for the /commands panel
@@ -175,14 +185,48 @@ function TaskLine({ task, selected, tracked, elapsed, toggl }) {
 }
 
 // list title + every project, for jumping around with /project
-function NavBar({ project, openCount }) {
+function NavBar({ project, openCount, oura }) {
   const items = ['inbox', ...listProjects()];
+  // sunrise/sunset for the inbox header — /location <city> sets it up
+  const loc = !project ? loadLocation() : null;
+  const sun = loc ? sunTimes(loc.lat, loc.lon) : null;
   return (
     <Box flexDirection="column" marginTop={1}>
       <Text>
         <Text bold color={ACCENT}>{project ? `Project: ${project}` : 'Inbox'}</Text>
         <Text dimColor> — {openCount} open task{openCount === 1 ? '' : 's'}</Text>
+        {sun && (
+          <Text>
+            <Text dimColor> · </Text>
+            <Text color="yellow">☀ {fmtSunTime(sun.sunrise, loc.tz)}</Text>
+            <Text dimColor> → </Text>
+            <Text color="blue">☾ {fmtSunTime(sun.sunset, loc.tz)}</Text>
+            <Text dimColor> ({loc.name.split(',')[0]})</Text>
+          </Text>
+        )}
       </Text>
+      {!project && oura && (
+        <Text>
+          <Text color="cyan">😴 sleep {oura.score ?? '–'}</Text>
+          <Text dimColor> · </Text>
+          <Text color="green">⚡ readiness {oura.readiness ?? '–'}</Text>
+          {oura.duration != null && (
+            <Text>
+              <Text dimColor> · </Text>
+              <Text>{fmtSleepDuration(oura.duration)} slept</Text>
+            </Text>
+          )}
+          {oura.bedtime && (
+            <Text>
+              <Text dimColor> · </Text>
+              <Text color="magenta">
+                🛏 bed by {fmtClockOffset(oura.bedtime.start_offset)}–{fmtClockOffset(oura.bedtime.end_offset)}
+              </Text>
+            </Text>
+          )}
+          {oura.day && <Text dimColor> ({oura.day})</Text>}
+        </Text>
+      )}
       {items.length > 1 && (
         <Text>
           {items.map((n, i) => {
@@ -213,6 +257,7 @@ function HelpBar({ view, toggl }) {
       </Text>
     );
   if (view === 'archive') return <Text dimColor>ctrl+u unarchive · ↑/↓ select · esc home</Text>;
+  if (view === 'kanban') return null; // the Kanban component renders its own hints
   return (
     <Text dimColor>
       m/w/d or tab switch view · enter zoom in · ←/→ day · ↑/↓ week · shift+←/→ prev/next
@@ -234,7 +279,9 @@ export function App({ initialView = 'home' }) {
   const [panel, setPanel] = useState(null);
   const [project, setProject] = useState(null); // null = inbox
   const [toggl, setToggl] = useState(() => !!togglToken()); // opt-in via /toggl, sticky across restarts
-  const [tokenPrompt, setTokenPrompt] = useState(false); // /toggl setup: paste-the-token prompt
+  const [tokenPrompt, setTokenPrompt] = useState(null); // 'toggl' | 'oura' — paste-the-token prompt
+  const [oura, setOura] = useState(() => !!ouraToken()); // opt-in via /oura, sticky across restarts
+  const [ouraData, setOuraData] = useState(null); // last night's scores for the inbox header
   const [tokenInput, setTokenInput] = useState('');
   const [filePrompt, setFilePrompt] = useState(null); // { name, count } — offer to pull tagged inbox tasks into a new project
   const [choice, setChoice] = useState(null); // { title, options, sel } — modal multiple-choice menu
@@ -250,6 +297,23 @@ export function App({ initialView = 'home' }) {
     const timer = setInterval(() => setTick((n) => n + 1), 1000);
     return () => clearInterval(timer);
   }, [tracking]);
+
+  // sleep scores load once on launch (and on /oura refresh) — never per-render
+  const refreshOura = (announce) => {
+    if (!ouraToken()) return;
+    fetchSleepSummary()
+      .then((d) => {
+        setOuraData(d);
+        if (announce)
+          note(
+            `Oura${d.day ? ` (${d.day})` : ''}: sleep ${d.score ?? '–'} · readiness ${d.readiness ?? '–'}${d.duration != null ? ` · ${fmtSleepDuration(d.duration)} slept` : ''}${d.bedtime ? ` · bed by ${fmtClockOffset(d.bedtime.start_offset)}–${fmtClockOffset(d.bedtime.end_offset)}` : ''}`
+          );
+      })
+      .catch((e) => note(`Oura: ${e.message}`));
+  };
+  useEffect(() => {
+    if (oura) refreshOura(false);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // long lists are windowed to the terminal height — re-render on resize
   const { stdout } = useStdout();
@@ -434,7 +498,7 @@ export function App({ initialView = 'home' }) {
   // /toggl actions shared by the args form and the multiple-choice menu
   const togglSetup = () => {
     openTokenPage();
-    setTokenPrompt(true);
+    setTokenPrompt('toggl');
     setTokenInput('');
     note(`Opened ${TOKEN_URL} in your browser.`);
   };
@@ -447,8 +511,25 @@ export function App({ initialView = 'home' }) {
     note('Toggl disconnected — token removed from ~/.gretchen/toggl-token.');
   };
 
+  // /oura actions shared by the args form and the multiple-choice menu
+  const ouraSetup = () => {
+    openOuraTokenPage();
+    setTokenPrompt('oura');
+    setTokenInput('');
+    note(`Opened ${OURA_TOKEN_URL} in your browser.`);
+  };
+  const ouraOff = () => {
+    if (process.env.OURA_API_TOKEN)
+      return note('Oura token comes from $OURA_API_TOKEN — unset it to disconnect.');
+    clearOuraToken();
+    setOura(false);
+    setOuraData(null);
+    note('Oura disconnected — token removed from ~/.gretchen/oura-token.');
+  };
+
   useInput((ch, key) => {
     if (key.ctrl && ch === 'c') return exit();
+    if (view === 'kanban') return; // the Kanban component owns all keys (incl. esc)
 
     if (view !== 'home') {
       if (key.escape) {
@@ -477,22 +558,39 @@ export function App({ initialView = 'home' }) {
     }
 
     // --- home view ---
-    // Toggl token prompt captures all input until connected or cancelled
+    // token prompt (Toggl or Oura) captures all input until connected or cancelled
     if (tokenPrompt) {
+      const svc = tokenPrompt === 'oura' ? 'Oura' : 'Toggl';
       if (key.escape) {
-        setTokenPrompt(false);
+        setTokenPrompt(null);
         setTokenInput('');
-        return note('Toggl setup cancelled.');
+        return note(`${svc} setup cancelled.`);
       }
       if (key.return) {
         const tok = tokenInput.trim();
         if (!tok) return;
-        note('Toggl: checking token…');
+        note(`${svc}: checking token…`);
+        if (tokenPrompt === 'oura') {
+          verifyOuraToken(tok)
+            .then((me) => {
+              saveOuraToken(tok);
+              setOura(true);
+              setTokenPrompt(null);
+              setTokenInput('');
+              refreshOura(false);
+              note(`Oura connected${me.email ? ` as ${me.email}` : ''} — last night shows in the inbox header.`);
+            })
+            .catch((e) => {
+              setTokenInput('');
+              note(`Oura: token rejected (${e.message}) — paste it again, or esc to cancel.`);
+            });
+          return;
+        }
         verifyToken(tok)
           .then((me) => {
             saveToken(tok);
             setToggl(true);
-            setTokenPrompt(false);
+            setTokenPrompt(null);
             setTokenInput('');
             note(`Toggl connected as ${me.fullname || me.email} — ctrl+t tracks the selected task.`);
           })
@@ -711,7 +809,7 @@ export function App({ initialView = 'home' }) {
           })
           .catch((e) => note(`⏺ tracking "${description}" locally (Toggl start failed: ${e.message})`));
       } else {
-        note(`⏺ tracking "${description}" — ctrl+t stops · /time shows the log`);
+        note(`⏺ tracking "${description}" — ctrl+t stops · /timelog shows the log`);
       }
       return;
     }
@@ -770,6 +868,7 @@ export function App({ initialView = 'home' }) {
         if (cmd === 'commands') return setPanel('commands');
         if (cmd === 'exit') return exit();
         if (cmd === 'cal') return setView('calendar');
+        if (cmd === 'kanban') return setView('kanban');
         if (cmd === 'archive') {
           const done = tasks.filter((t) => t.done);
           if (done.length === 0) return note('No completed tasks to archive.');
@@ -888,13 +987,13 @@ export function App({ initialView = 'home' }) {
           setSel(0);
           return note(`Sorted by ${k.key} (${k.desc}) — sub-tasks stay with their parent.`);
         }
-        if (cmd === 'time') {
+        if (cmd === 'timelog') {
           const [, arg, value] = text.split(/\s+/);
           if (!arg) {
-            // bare /time opens a multiple-choice menu, like /toggl
+            // bare /timelog opens a multiple-choice menu, like /toggl
             const s = timeStats();
             setChoice({
-              title: 'Time log',
+              title: 'Timelog',
               sel: 0,
               options: [
                 {
@@ -916,7 +1015,7 @@ export function App({ initialView = 'home' }) {
                 {
                   label: 'Set import email',
                   desc: getEmail() || 'used to match you on Toggl CSV import',
-                  action: () => editInput(() => '/time email '),
+                  action: () => editInput(() => '/timelog email '),
                 },
               ],
             });
@@ -926,8 +1025,8 @@ export function App({ initialView = 'home' }) {
             if (!value)
               return note(
                 getEmail()
-                  ? `Import email: ${getEmail()} — /time email <addr> changes it.`
-                  : 'No email set — /time email you@example.com (Toggl import uses it to match you).'
+                  ? `Import email: ${getEmail()} — /timelog email <addr> changes it.`
+                  : 'No email set — /timelog email you@example.com (Toggl import uses it to match you).'
               );
             setEmail(value);
             return note(`Import email set to ${value} — new time.csv rows will carry it.`);
@@ -942,8 +1041,110 @@ export function App({ initialView = 'home' }) {
           return note(
             s.entries === 0
               ? `No time entries yet — ctrl+t on a task starts the timer. Log: ${timeCsvPath()}`
-              : `${s.entries} entr${s.entries === 1 ? 'y' : 'ies'} · ${s.today} today · ${s.total} total · ${timeCsvPath()}${getEmail() ? '' : ' — set /time email for Toggl import'}`
+              : `${s.entries} entr${s.entries === 1 ? 'y' : 'ies'} · ${s.today} today · ${s.total} total · ${timeCsvPath()}${getEmail() ? '' : ' — set /timelog email for Toggl import'}`
           );
+        }
+        if (cmd === 'location') {
+          const arg = text.split(/\s+/).slice(1).join(' ');
+          if (!arg) {
+            // bare /location opens a multiple-choice menu, like /toggl
+            const loc = loadLocation();
+            const s = loc ? sunTimes(loc.lat, loc.lon) : null;
+            setChoice({
+              title: loc ? `Location — ${loc.name}` : 'Location — not set',
+              sel: 0,
+              options: loc
+                ? [
+                    {
+                      label: 'Sun today',
+                      desc: s
+                        ? `sunrise ${fmtSunTime(s.sunrise, loc.tz)} · sunset ${fmtSunTime(s.sunset, loc.tz)}`
+                        : 'polar day/night — no sunrise or sunset today',
+                      action: () =>
+                        note(
+                          s
+                            ? `${loc.name}: ☀ ${fmtSunTime(s.sunrise, loc.tz)} → ☾ ${fmtSunTime(s.sunset, loc.tz)}`
+                            : `${loc.name}: the sun doesn't rise or set today.`
+                        ),
+                    },
+                    { label: 'Change location', desc: 'type a city name', action: () => editInput(() => '/location ') },
+                    {
+                      label: 'Clear location',
+                      desc: 'hide sunrise/sunset from the inbox',
+                      action: () => {
+                        clearLocation();
+                        setTick((n) => n + 1);
+                        note('Location cleared.');
+                      },
+                    },
+                  ]
+                : [
+                    { label: 'Set location', desc: 'type a city — sunrise/sunset show in the inbox', action: () => editInput(() => '/location ') },
+                    { label: 'Not now', desc: 'the inbox header stays as it is', action: () => {} },
+                  ],
+            });
+            return;
+          }
+          note(`Looking up "${arg}"…`);
+          geocode(arg)
+            .then((loc) => {
+              if (!loc) return note(`No place found for "${arg}" — try a city name, like /location falls church.`);
+              saveLocation(loc);
+              setTick((n) => n + 1);
+              const s = sunTimes(loc.lat, loc.lon);
+              note(
+                `Location set: ${loc.name}${s ? ` — ☀ ${fmtSunTime(s.sunrise, loc.tz)} → ☾ ${fmtSunTime(s.sunset, loc.tz)}` : ''}`
+              );
+            })
+            .catch((e) => note(`Location lookup failed (${e.message}) — are you online?`));
+          return;
+        }
+        if (cmd === 'oura') {
+          const [, arg] = text.split(/\s+/);
+          if (!arg) {
+            // bare /oura opens a multiple-choice menu, like /toggl
+            const d = ouraData;
+            setChoice({
+              title: oura ? 'Oura Ring — connected' : 'Oura Ring — not connected',
+              sel: 0,
+              options: oura
+                ? [
+                    {
+                      label: 'Last night',
+                      desc: d
+                        ? `sleep ${d.score ?? '–'} · readiness ${d.readiness ?? '–'}${d.duration != null ? ` · ${fmtSleepDuration(d.duration)}` : ''}`
+                        : 'not loaded yet — Refresh fetches it',
+                      action: () => (d ? refreshOura(true) : note('No data yet — /oura refresh fetches it.')),
+                    },
+                    { label: 'Refresh', desc: 'fetch the latest sync from Oura', action: () => { note('Oura: refreshing…'); refreshOura(true); } },
+                    { label: 'Reconnect', desc: 'paste a new personal access token', action: ouraSetup },
+                    { label: 'Disconnect', desc: 'remove the token and hide sleep data', action: ouraOff },
+                  ]
+                : [
+                    { label: 'Connect Oura', desc: 'opens the personal-access-token page in your browser', action: ouraSetup },
+                    { label: 'Not now', desc: 'the inbox header stays as it is', action: () => {} },
+                  ],
+            });
+            return;
+          }
+          if (arg === 'setup') return ouraSetup();
+          if (arg === 'off') return ouraOff();
+          if (arg === 'refresh') {
+            if (!oura) return note('Oura is not connected — /oura opens setup.');
+            note('Oura: refreshing…');
+            return refreshOura(true);
+          }
+          // anything else is treated as a pasted token
+          note('Oura: checking token…');
+          verifyOuraToken(arg)
+            .then((me) => {
+              saveOuraToken(arg);
+              setOura(true);
+              refreshOura(false);
+              note(`Oura connected${me.email ? ` as ${me.email}` : ''} — last night shows in the inbox header.`);
+            })
+            .catch((e) => note(`Oura: token rejected (${e.message}). Check ${OURA_TOKEN_URL}.`));
+          return;
         }
         if (cmd === 'toggl') {
           const [, arg, ...rest] = text.split(/\s+/);
@@ -1085,6 +1286,8 @@ export function App({ initialView = 'home' }) {
 
       {view === 'calendar' && <Calendar tasks={loadAllTasks()} accent={ACCENT} />}
 
+      {view === 'kanban' && <Kanban accent={ACCENT} onExit={() => { setView('home'); setSel(0); }} />}
+
       {view === 'archive' && (
         <Box flexDirection="column" marginTop={1}>
           <Text bold>Archive ({archive.length})</Text>
@@ -1113,7 +1316,7 @@ export function App({ initialView = 'home' }) {
 
       {view === 'home' && (
         <Box flexDirection="column">
-          <NavBar project={project} openCount={visible.filter((t) => !t.done).length} />
+          <NavBar project={project} openCount={visible.filter((t) => !t.done).length} oura={ouraData} />
           {filePrompt && (
             <Box flexDirection="column" borderStyle="round" borderColor="magenta" paddingX={1} marginTop={1}>
               <Text>
@@ -1163,10 +1366,11 @@ export function App({ initialView = 'home' }) {
           )}
           {tokenPrompt ? (
             <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} marginTop={1}>
-              <Text bold color="cyan">Connect Toggl Track</Text>
+              <Text bold color="cyan">{tokenPrompt === 'oura' ? 'Connect Oura Ring' : 'Connect Toggl Track'}</Text>
               <Text dimColor>
-                Your browser opened {TOKEN_URL} — scroll to "API Token" at the bottom, copy it,
-                and paste it here.
+                {tokenPrompt === 'oura'
+                  ? `Your browser opened ${OURA_TOKEN_URL} — create a personal access token, copy it, and paste it here.`
+                  : `Your browser opened ${TOKEN_URL} — scroll to "API Token" at the bottom, copy it, and paste it here.`}
               </Text>
               <Text>
                 <Text color="cyan">{'token> '}</Text>

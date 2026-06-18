@@ -40,7 +40,9 @@ Slash commands (type / to see the menu, tab completes):
   /tag <name>           filter by #tag (/tag lists tags, /all clears)
   /sort <key>           priority · due · tag · description · status
   /stats                task counts at a glance
-  /time                 time log summary (/time email <addr> · /time open)
+  /timelog              time log summary (/timelog email <addr> · /timelog open)
+  /location <city>      sunrise/sunset in the inbox header (/location to manage)
+  /oura                 Oura Ring sleep — score, readiness, ideal bedtime (/oura off)
   /toggl                also push entries live to Toggl (/toggl off disconnects)
   /commands             every command with its aliases
   /exit (or /quit)      quit gretchen
