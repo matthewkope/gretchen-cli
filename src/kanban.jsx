@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Box, Text, useInput, useStdout } from 'ink';
-import { loadBoard, saveBoard, parseInput, archiveTask } from './store.js';
+import { loadBoard, saveBoard, parseInput, archiveTask, loadSprint, startNewSprint } from './store.js';
 
 // The kanban board, terminal edition. Same ~/.gretchen/kanban.md the web app and
 // the Mac app use (Obsidian Kanban format), so edits here show up there and vice
@@ -16,6 +16,17 @@ export function Kanban({ accent, onExit }) {
   const [cardIdx, setCardIdx] = useState(0);
   const [editing, setEditing] = useState(null); // { mode:'add'|'edit'|'newcol'|'rename', text }
   const [flash, setFlash] = useState(null);
+  const [sprint, setSprint] = useState(() => loadSprint());
+
+  // archive the Done list, roll the rest forward, bump the sprint number
+  function newSprint() {
+    const out = startNewSprint({ goal: '' });
+    setBoard(loadBoard());
+    setSprint(out.sprint);
+    setColIdx(0);
+    setCardIdx(0);
+    setFlash(`Sprint ${out.sprint.number} started — archived ${out.archived} card${out.archived === 1 ? '' : 's'}`);
+  }
 
   const commit = (next) => { saveBoard(next); setBoard(next); };
   const clone = () => board.map((c) => ({ ...c, cards: [...c.cards] }));
@@ -114,6 +125,7 @@ export function Kanban({ accent, onExit }) {
     if (ch === 'e' || key.return) { if (card) setEditing({ mode: 'edit', text: card.title }); return; }
     if (ch === 'x') return deleteCard();
     if (ch === 'A') return archiveColumn();
+    if (ch === 'S') return newSprint();
     if (ch === 'n') return setEditing({ mode: 'newcol', text: '' });
     if (ch === 'r') { if (col) setEditing({ mode: 'rename', text: col.name }); return; }
   });
@@ -131,8 +143,26 @@ export function Kanban({ accent, onExit }) {
     ? { add: `Add to ${col?.name}`, edit: 'Edit card', newcol: 'New list', rename: 'Rename list' }[editing.mode]
     : '';
 
+  // day N of the sprint, inclusive of both endpoints
+  const sprintDay = (() => {
+    const d0 = (s) => new Date(`${s}T00:00:00`);
+    const now = new Date(); now.setHours(0, 0, 0, 0);
+    const D = 86400000;
+    const total = Math.max(1, Math.round((d0(sprint.end) - d0(sprint.start)) / D) + 1);
+    const day = Math.min(total, Math.max(1, Math.round((now - d0(sprint.start)) / D) + 1));
+    return { day, total };
+  })();
+
   return (
     <Box flexDirection="column" marginTop={1}>
+      <Text>
+        <Text bold color={accent}>Sprint {sprint.number}</Text>
+        <Text dimColor>
+          {'  '}{sprint.goal || 'no goal set'}
+          {'  ·  '}{sprint.start} → {sprint.end}
+          {'  ·  Day '}{sprintDay.day}/{sprintDay.total}
+        </Text>
+      </Text>
       <Text>
         <Text bold color={accent}>Kanban</Text>
         <Text dimColor>
@@ -179,7 +209,7 @@ export function Kanban({ accent, onExit }) {
       ) : (
         <Text dimColor>
           {flash ||
-            'a add · e/⏎ edit · x delete · ⇧←/→ move list · ⇧↑/↓ reorder · n new list · r rename · A archive list · esc home'}
+            'a add · e/⏎ edit · x delete · ⇧←/→ move · ⇧↑/↓ reorder · n new list · r rename · A archive · S new sprint · esc home'}
         </Text>
       )}
     </Box>
