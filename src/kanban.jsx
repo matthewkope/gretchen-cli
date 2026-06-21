@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Box, Text, useInput, useStdout } from 'ink';
-import { loadBoard, saveBoard, parseInput, archiveTask, loadSprint, startNewSprint } from './store.js';
+import { loadBoard, saveBoard, parseInput, archiveTask, loadSprint, startNewSprint, sprintLabel } from './store.js';
 
 // The kanban board, terminal edition. Same ~/.gretchen/kanban.md the web app and
 // the Mac app use (Obsidian Kanban format), so edits here show up there and vice
@@ -64,7 +64,8 @@ export function Kanban({ accent, onExit }) {
   function archiveColumn() {
     if (!col?.cards.length) return;
     const n = col.cards.length;
-    for (const c of col.cards) archiveTask(c); // → ~/.gretchen/archive.md
+    const label = sprintLabel(sprint); // stamp each card with its sprint
+    for (const c of col.cards) archiveTask(c, label); // → ~/.gretchen/archive.md
     const next = board.map((c, i) => (i === colIdx ? { ...c, cards: [] } : c));
     commit(next);
     setCardIdx(0);
@@ -156,8 +157,9 @@ export function Kanban({ accent, onExit }) {
   return (
     <Box flexDirection="column" marginTop={1}>
       <Text>
-        <Text bold color={accent}>Sprint {sprint.number}</Text>
+        <Text bold color={accent}>{sprintLabel(sprint)}</Text>
         <Text dimColor>
+          {sprint.name ? `  #${sprint.number}` : ''}
           {'  '}{sprint.goal || 'no goal set'}
           {'  ·  '}{sprint.start} → {sprint.end}
           {'  ·  Day '}{sprintDay.day}/{sprintDay.total}

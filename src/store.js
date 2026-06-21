@@ -93,6 +93,7 @@ export function formatTask(task) {
   if (task.priority) line += ` ${priorityEmoji(task.priority)}`;
   if (task.date) line += ` 📅 ${task.date}`;
   if (task.doneDate) line += ` ✅ ${task.doneDate}`;
+  if (task.sprint) line += ` [sprint:: ${task.sprint}]`; // which sprint a card came from
   return line;
 }
 
@@ -115,8 +116,14 @@ export function parseLine(line) {
     doneDate = done[1];
     rest = rest.replace(done[0], '');
   }
+  let sprint = null;
+  const sp = rest.match(/\[sprint::\s*([^\]]+)\]/);
+  if (sp) {
+    sprint = sp[1].trim();
+    rest = rest.replace(sp[0], '');
+  }
   const { priority, text } = extractPriority(rest);
-  return { done: m[2] === 'x', title: text.replace(/\s{2,}/g, ' ').trim(), date, doneDate, priority, indent };
+  return { done: m[2] === 'x', title: text.replace(/\s{2,}/g, ' ').trim(), date, doneDate, priority, sprint, indent };
 }
 
 // Groups a flat list into blocks: each top-level task plus its sub-tasks.
@@ -263,10 +270,11 @@ export function saveArchive(tasks) {
   fs.writeFileSync(ARCHIVE_FILE, out.replace(/^\n/, ''));
 }
 
-export function archiveTask(task) {
+export function archiveTask(task, sprint) {
   const archive = loadArchive();
-  // the archive is flat (grouped by completion week), so nesting is dropped
-  archive.unshift({ ...task, done: true, doneDate: task.doneDate || today(), indent: 0 });
+  // the archive is flat (grouped by completion week), so nesting is dropped.
+  // `sprint` (optional) records which sprint board the card came from.
+  archive.unshift({ ...task, done: true, doneDate: task.doneDate || today(), indent: 0, sprint: sprint || task.sprint || null });
   saveArchive(archive);
 }
 
@@ -333,6 +341,7 @@ function writeBoard(columns, sprint) {
   const fm = ['kanban-plugin: board'];
   if (sprint) {
     fm.push(`sprint: ${sprint.number}`);
+    if (sprint.name) fm.push(`sprint-name: ${sprint.name}`);
     if (sprint.goal) fm.push(`sprint-goal: ${sprint.goal}`);
     if (sprint.start) fm.push(`sprint-start: ${sprint.start}`);
     if (sprint.end) fm.push(`sprint-end: ${sprint.end}`);
@@ -352,7 +361,10 @@ function addDays(isoStr, n) {
 }
 function defaultSprint() {
   const start = today();
-  return { number: 1, goal: '', start, end: addDays(start, 13) };
+  return { number: 1, name: '', goal: '', start, end: addDays(start, 13) };
+}
+export function sprintLabel(sprint) {
+  return (sprint?.name || '').trim() || `Sprint ${sprint?.number || 1}`;
 }
 function readSprint() {
   if (!fs.existsSync(BOARD_FILE)) return defaultSprint();
@@ -364,6 +376,7 @@ function readSprint() {
     if (!m) continue;
     const [, k, v] = m;
     if (k === 'sprint') s.number = Number(v) || s.number;
+    else if (k === 'sprint-name') s.name = v.trim();
     else if (k === 'sprint-goal') s.goal = v.trim();
     else if (k === 'sprint-start') s.start = v.trim();
     else if (k === 'sprint-end') s.end = v.trim();
@@ -382,19 +395,20 @@ export function saveSprint(patch) {
   return sprint;
 }
 
-export function startNewSprint({ goal = '', start, end } = {}) {
+export function startNewSprint({ goal = '', name, start, end } = {}) {
   const prev = readSprint();
   const board = loadBoard();
+  const label = sprintLabel(prev);
   let idx = board.findIndex((c) => /^done$/i.test(c.name));
   if (idx < 0) idx = board.length - 1;
   let archived = 0;
   if (board[idx]) {
-    for (const card of board[idx].cards) { archiveTask(card); archived++; }
+    for (const card of board[idx].cards) { archiveTask(card, label); archived++; }
     board[idx].cards = [];
   }
   const len = Math.max(1, Math.round((new Date(prev.end) - new Date(prev.start)) / 86400000)) || 13;
   const newStart = start || today();
-  const sprint = { number: (prev.number || 1) + 1, goal, start: newStart, end: end || addDays(newStart, len) };
+  const sprint = { number: (prev.number || 1) + 1, name: name != null ? name : '', goal, start: newStart, end: end || addDays(newStart, len) };
   writeBoard(board, sprint);
   return { sprint, archived, doneColumn: board[idx]?.name };
 }
