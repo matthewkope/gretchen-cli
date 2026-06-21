@@ -1,37 +1,62 @@
 import React, { useState } from 'react';
 import { Box, Text, useInput, useStdout } from 'ink';
-import { loadBoard, saveBoard, parseInput, archiveTask, loadSprint, startNewSprint, sprintLabel } from './store.js';
+import {
+  loadBoard, saveBoard, parseInput, archiveTask, loadSprint, startNewSprint,
+  sprintLabel, listBoards, addBoard,
+} from './store.js';
 
-// The kanban board, terminal edition. Same ~/.gretchen/kanban.md the web app and
-// the Mac app use (Obsidian Kanban format), so edits here show up there and vice
-// versa. No drag-and-drop in a terminal, so cards move by keyboard:
+// The kanban board, terminal edition. Same ~/.gretchen board files the web app
+// and the Mac app use (Obsidian Kanban format), so edits here show up there and
+// vice versa. Each board is its own sprint. No drag-and-drop in a terminal, so:
 //   ←/→ or h/l : select column      ↑/↓ or j/k : select card
 //   shift+←/→  : move card to the prev/next list (change its status)
 //   shift+↑/↓  : reorder the card within its list
-//   a add · enter/e edit · x delete · A archive list · n new list · r rename · esc home
+//   [ / ]      : switch board (sprint)      B : new board
+//   a add · enter/e edit · x delete · A archive list · S new sprint · n new list · r rename
 export function Kanban({ accent, onExit }) {
   const { stdout } = useStdout();
-  const [board, setBoard] = useState(() => loadBoard());
+  const [boardSlug, setBoardSlug] = useState('default');
+  const [boards, setBoards] = useState(() => listBoards());
+  const [board, setBoard] = useState(() => loadBoard('default'));
+  const [sprint, setSprint] = useState(() => loadSprint('default'));
   const [colIdx, setColIdx] = useState(0);
   const [cardIdx, setCardIdx] = useState(0);
-  const [editing, setEditing] = useState(null); // { mode:'add'|'edit'|'newcol'|'rename', text }
+  const [editing, setEditing] = useState(null); // { mode:'add'|'edit'|'newcol'|'rename'|'newboard', text }
   const [flash, setFlash] = useState(null);
-  const [sprint, setSprint] = useState(() => loadSprint());
 
-  // archive the Done list, roll the rest forward, bump the sprint number
-  function newSprint() {
-    const out = startNewSprint({ goal: '' });
-    setBoard(loadBoard());
-    setSprint(out.sprint);
-    setColIdx(0);
-    setCardIdx(0);
-    setFlash(`Sprint ${out.sprint.number} started — archived ${out.archived} card${out.archived === 1 ? '' : 's'}`);
-  }
-
-  const commit = (next) => { saveBoard(next); setBoard(next); };
+  const commit = (next) => { saveBoard(next, boardSlug); setBoard(next); };
   const clone = () => board.map((c) => ({ ...c, cards: [...c.cards] }));
   const col = board[colIdx];
   const card = col?.cards[cardIdx];
+
+  // switch to another board (sprint), reloading its columns + sprint header
+  function switchBoard(slug) {
+    setBoardSlug(slug);
+    setBoard(loadBoard(slug));
+    setSprint(loadSprint(slug));
+    setBoards(listBoards());
+    setColIdx(0);
+    setCardIdx(0);
+  }
+  function cycleBoard(dir) {
+    const list = listBoards();
+    if (list.length < 2) { setFlash('only one board — press B to make another'); return; }
+    const i = Math.max(0, list.findIndex((b) => b.slug === boardSlug));
+    const nextB = list[(i + dir + list.length) % list.length];
+    switchBoard(nextB.slug);
+    setFlash(`board: ${nextB.name}`);
+  }
+
+  // archive the Done list, roll the rest forward, bump the sprint number
+  function newSprint() {
+    const out = startNewSprint({ goal: '' }, boardSlug);
+    setBoard(loadBoard(boardSlug));
+    setSprint(out.sprint);
+    setBoards(listBoards());
+    setColIdx(0);
+    setCardIdx(0);
+    setFlash(`${sprintLabel(out.sprint)} started — archived ${out.archived} card${out.archived === 1 ? '' : 's'}`);
+  }
 
   function moveCard(dir) {
     const to = colIdx + dir;
@@ -95,6 +120,10 @@ export function Kanban({ accent, onExit }) {
       setCardIdx(0);
     } else if (m === 'rename' && text) {
       commit(board.map((c, i) => (i === colIdx ? { ...c, name: text } : c)));
+    } else if (m === 'newboard' && text) {
+      const { slug } = addBoard({ name: text });
+      switchBoard(slug);
+      setFlash(`Created board: ${text}`);
     }
     setEditing(null);
   }
@@ -116,6 +145,10 @@ export function Kanban({ accent, onExit }) {
     if (key.shift && key.rightArrow) return moveCard(1);
     if (key.shift && key.upArrow) return reorderCard(-1);
     if (key.shift && key.downArrow) return reorderCard(1);
+    // switch board (sprint)
+    if (ch === '[') return cycleBoard(-1);
+    if (ch === ']') return cycleBoard(1);
+    if (ch === 'B') return setEditing({ mode: 'newboard', text: '' });
     // navigate
     if (key.leftArrow || ch === 'h') { setColIdx((i) => Math.max(0, i - 1)); setCardIdx(0); return; }
     if (key.rightArrow || ch === 'l') { setColIdx((i) => Math.min(n - 1, i + 1)); setCardIdx(0); return; }
@@ -138,10 +171,10 @@ export function Kanban({ accent, onExit }) {
   const perScreen = Math.max(1, Math.floor((totalW - 1) / (colW + 2)));
   const startCol = Math.max(0, Math.min(colIdx - Math.floor(perScreen / 2), Math.max(0, board.length - perScreen)));
   const visible = board.map((c, i) => ({ ...c, idx: i })).slice(startCol, startCol + perScreen);
-  const maxCards = Math.max(4, (stdout?.rows ?? 24) - 11);
+  const maxCards = Math.max(4, (stdout?.rows ?? 24) - 12);
 
   const editLabel = editing
-    ? { add: `Add to ${col?.name}`, edit: 'Edit card', newcol: 'New list', rename: 'Rename list' }[editing.mode]
+    ? { add: `Add to ${col?.name}`, edit: 'Edit card', newcol: 'New list', rename: 'Rename list', newboard: 'New board name' }[editing.mode]
     : '';
 
   // day N of the sprint, inclusive of both endpoints
@@ -156,6 +189,15 @@ export function Kanban({ accent, onExit }) {
 
   return (
     <Box flexDirection="column" marginTop={1}>
+      {/* board tabs (one per sprint) */}
+      <Text>
+        <Text dimColor>boards  </Text>
+        {boards.map((b, i) => (
+          <Text key={b.slug} bold={b.slug === boardSlug} color={b.slug === boardSlug ? accent : undefined} dimColor={b.slug !== boardSlug}>
+            {i > 0 ? '   ' : ''}{b.slug === boardSlug ? '▸ ' : '  '}{b.name}
+          </Text>
+        ))}
+      </Text>
       <Text>
         <Text bold color={accent}>{sprintLabel(sprint)}</Text>
         <Text dimColor>
@@ -163,12 +205,7 @@ export function Kanban({ accent, onExit }) {
           {'  '}{sprint.goal || 'no goal set'}
           {'  ·  '}{sprint.start} → {sprint.end}
           {'  ·  Day '}{sprintDay.day}/{sprintDay.total}
-        </Text>
-      </Text>
-      <Text>
-        <Text bold color={accent}>Kanban</Text>
-        <Text dimColor>
-          {'  '}{board.length} list{board.length === 1 ? '' : 's'}
+          {'  ·  '}{board.length} list{board.length === 1 ? '' : 's'}
           {startCol > 0 ? '  ‹ more' : ''}
           {startCol + perScreen < board.length ? '  more ›' : ''}
         </Text>
@@ -211,7 +248,7 @@ export function Kanban({ accent, onExit }) {
       ) : (
         <Text dimColor>
           {flash ||
-            'a add · e/⏎ edit · x delete · ⇧←/→ move · ⇧↑/↓ reorder · n new list · r rename · A archive · S new sprint · esc home'}
+            'a add · e/⏎ edit · x del · ⇧←/→ move · ⇧↑/↓ reorder · n list · r rename · A archive · S sprint · [/] board · B new board · esc home'}
         </Text>
       )}
     </Box>

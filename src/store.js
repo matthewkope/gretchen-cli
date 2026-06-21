@@ -284,19 +284,27 @@ export function archiveTask(task, sprint) {
 // `- [ ]` cards + settings footer), so ~/.gretchen/kanban.md opens as a board in
 // Obsidian and is the single source of truth across the app, the web UI and here.
 const DEFAULT_COLUMNS = ['To do', 'In Progress', 'Done'];
+const BOARDS_DIR = path.join(DIR, 'boards');
 
-export function boardFile() {
-  return BOARD_FILE;
+// Each board is its own sprint, in its own file. The default board stays at
+// kanban.md; extra boards live in ~/.gretchen/boards/<slug>.md. '' or 'default'
+// means the kanban.md board. Mirrors the web app's lib/store.js.
+function isDefaultBoard(slug) {
+  return !slug || slug === 'default';
+}
+export function boardFile(slug) {
+  return isDefaultBoard(slug) ? BOARD_FILE : path.join(BOARDS_DIR, `${slug}.md`);
 }
 
-export function loadBoard() {
+export function loadBoard(slug) {
   ensureDir();
-  if (!fs.existsSync(BOARD_FILE)) {
+  const file = boardFile(slug);
+  if (!fs.existsSync(file)) {
     const columns = DEFAULT_COLUMNS.map((name) => ({ name, cards: [] }));
-    saveBoard(columns);
+    saveBoard(columns, slug);
     return columns;
   }
-  const lines = fs.readFileSync(BOARD_FILE, 'utf8').split('\n');
+  const lines = fs.readFileSync(file, 'utf8').split('\n');
   let i = 0;
   if (lines[0]?.trim() === '---') {
     i = 1;
@@ -319,18 +327,20 @@ export function loadBoard() {
   }
   if (!columns.length) {
     const def = DEFAULT_COLUMNS.map((name) => ({ name, cards: [] }));
-    saveBoard(def);
+    saveBoard(def, slug);
     return def;
   }
   return columns;
 }
 
-export function saveBoard(columns) {
-  writeBoard(columns, readSprint()); // preserve the sprint frontmatter on every save
+export function saveBoard(columns, slug) {
+  writeBoard(columns, readSprint(slug), slug); // preserve the sprint frontmatter on every save
 }
 
-function writeBoard(columns, sprint) {
+function writeBoard(columns, sprint, slug) {
   ensureDir();
+  const file = boardFile(slug);
+  if (!isDefaultBoard(slug)) fs.mkdirSync(BOARDS_DIR, { recursive: true });
   const fence = '```';
   const lanes = columns
     .map((c) => {
@@ -350,10 +360,10 @@ function writeBoard(columns, sprint) {
     `---\n\n${fm.join('\n')}\n\n---\n\n` +
     lanes +
     `\n\n%% kanban:settings\n${fence}\n{"kanban-plugin":"board"}\n${fence}\n%%\n`;
-  fs.writeFileSync(BOARD_FILE, body);
+  fs.writeFileSync(file, body);
 }
 
-// ── Sprint metadata (kanban.md frontmatter); mirrors the web app's store.js ──
+// ── Sprint metadata (per-board frontmatter); mirrors the web app's store.js ──
 function addDays(isoStr, n) {
   const d = new Date(`${isoStr}T00:00:00`);
   d.setDate(d.getDate() + n);
@@ -366,9 +376,10 @@ function defaultSprint() {
 export function sprintLabel(sprint) {
   return (sprint?.name || '').trim() || `Sprint ${sprint?.number || 1}`;
 }
-function readSprint() {
-  if (!fs.existsSync(BOARD_FILE)) return defaultSprint();
-  const lines = fs.readFileSync(BOARD_FILE, 'utf8').split('\n');
+function readSprint(slug) {
+  const file = boardFile(slug);
+  if (!fs.existsSync(file)) return defaultSprint();
+  const lines = fs.readFileSync(file, 'utf8').split('\n');
   if (lines[0]?.trim() !== '---') return defaultSprint();
   const s = defaultSprint();
   for (let i = 1; i < lines.length && lines[i].trim() !== '---'; i++) {
@@ -384,20 +395,20 @@ function readSprint() {
   return s;
 }
 
-export function loadSprint() {
+export function loadSprint(slug) {
   ensureDir();
-  return readSprint();
+  return readSprint(slug);
 }
 
-export function saveSprint(patch) {
-  const sprint = { ...readSprint(), ...patch };
-  writeBoard(loadBoard(), sprint);
+export function saveSprint(patch, slug) {
+  const sprint = { ...readSprint(slug), ...patch };
+  writeBoard(loadBoard(slug), sprint, slug);
   return sprint;
 }
 
-export function startNewSprint({ goal = '', name, start, end } = {}) {
-  const prev = readSprint();
-  const board = loadBoard();
+export function startNewSprint({ goal = '', name, start, end } = {}, slug) {
+  const prev = readSprint(slug);
+  const board = loadBoard(slug);
   const label = sprintLabel(prev);
   let idx = board.findIndex((c) => /^done$/i.test(c.name));
   if (idx < 0) idx = board.length - 1;
@@ -409,8 +420,41 @@ export function startNewSprint({ goal = '', name, start, end } = {}) {
   const len = Math.max(1, Math.round((new Date(prev.end) - new Date(prev.start)) / 86400000)) || 13;
   const newStart = start || today();
   const sprint = { number: (prev.number || 1) + 1, name: name != null ? name : '', goal, start: newStart, end: end || addDays(newStart, len) };
-  writeBoard(board, sprint);
+  writeBoard(board, sprint, slug);
   return { sprint, archived, doneColumn: board[idx]?.name };
+}
+
+// ── Multiple boards (mirrors the web app) ───────────────────────────────────
+export function listBoards() {
+  ensureDir();
+  const boards = [{ slug: 'default', sprint: readSprint('default') }];
+  if (fs.existsSync(BOARDS_DIR)) {
+    for (const f of fs.readdirSync(BOARDS_DIR).filter((f) => f.endsWith('.md')).sort()) {
+      const slug = f.slice(0, -3);
+      boards.push({ slug, sprint: readSprint(slug) });
+    }
+  }
+  return boards.map((b) => ({ ...b, name: sprintLabel(b.sprint) }));
+}
+
+export function addBoard({ name = '', goal = '', start, end } = {}) {
+  ensureDir();
+  fs.mkdirSync(BOARDS_DIR, { recursive: true });
+  const base = slugifyProject(name) || 'sprint';
+  let slug = base;
+  for (let n = 2; fs.existsSync(boardFile(slug)) || isDefaultBoard(slug); n++) slug = `${base}-${n}`;
+  const s = start || today();
+  const sprint = { number: 1, name: name.trim(), goal, start: s, end: end || addDays(s, 13) };
+  writeBoard(DEFAULT_COLUMNS.map((nm) => ({ name: nm, cards: [] })), sprint, slug);
+  return { slug, sprint };
+}
+
+export function deleteBoard(slug) {
+  if (isDefaultBoard(slug)) return { error: 'the default board can’t be deleted' };
+  const file = boardFile(slug);
+  if (!fs.existsSync(file)) return { error: 'no such board' };
+  fs.unlinkSync(file);
+  return { ok: true };
 }
 
 function iso(d) {
